@@ -70,6 +70,11 @@ cargo test             # Run Rust unit tests (in src-tauri/)
 - **When completing a phase**: Update the Current Status checklist above and commit the change
 - **When starting a phase**: Mark the task in_progress using TaskUpdate
 
+## Known Deferred Items
+
+- **P7 — Encoder phase flip timing** (`src-tauri/src/modem/encoder.rs`): Phase is flipped at the start of each symbol (full amplitude), defeating raised cosine shaping. Correct fix requires splitting the envelope across the symbol boundary (look-ahead). Marked with TODO in source.
+- **P9 — CSP disabled** (`src-tauri/tauri.conf.json`): `"csp": null` disables Content Security Policy. Low risk for a local-only app but worth hardening. Replace with `"default-src 'self'; style-src 'self' 'unsafe-inline'"` when ready.
+
 ## License Consideration
 
 All dependencies MIT/Apache-2.0 except `serialport` (MPL-2.0). If we need to modify serialport, consider `tokio-serial` (MIT) instead.
