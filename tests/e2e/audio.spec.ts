@@ -12,9 +12,9 @@ test.describe('Audio Panel', () => {
   test('audio input dropdown populates from backend', async ({ page }) => {
     await mockInvoke(page, {
       list_audio_devices: [
-        { id: 'FT-991A USB Audio', name: 'FT-991A USB Audio', is_input: true, is_default: false },
-        { id: 'Built-in Microphone', name: 'Built-in Microphone', is_input: true, is_default: true },
-        { id: 'Built-in Speakers', name: 'Built-in Speakers', is_input: false, is_default: true },
+        { id: 'FT-991A USB Audio', name: 'FT-991A USB Audio', isInput: true, isDefault: false },
+        { id: 'Built-in Microphone', name: 'Built-in Microphone', isInput: true, isDefault: true },
+        { id: 'Built-in Speakers', name: 'Built-in Speakers', isInput: false, isDefault: true },
       ],
     });
 
@@ -33,8 +33,8 @@ test.describe('Audio Panel', () => {
   test('default device marked in dropdown', async ({ page }) => {
     await mockInvoke(page, {
       list_audio_devices: [
-        { id: 'FT-991A USB Audio', name: 'FT-991A USB Audio', is_input: true, is_default: false },
-        { id: 'Built-in Microphone', name: 'Built-in Microphone', is_input: true, is_default: true },
+        { id: 'FT-991A USB Audio', name: 'FT-991A USB Audio', isInput: true, isDefault: false },
+        { id: 'Built-in Microphone', name: 'Built-in Microphone', isInput: true, isDefault: true },
       ],
     });
 

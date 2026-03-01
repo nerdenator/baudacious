@@ -11,10 +11,10 @@ import { mockInvoke, fireEvent } from './helpers';
 /** Minimal mocks for tests that don't need serial/audio devices */
 const DISCONNECTED_STATUS = {
   get_connection_status: {
-    serial_connected: false,
-    serial_port: null,
-    audio_streaming: false,
-    audio_device: null,
+    serialConnected: false,
+    serialPort: null,
+    audioStreaming: false,
+    audioDevice: null,
   },
   list_audio_devices: [],
   list_serial_ports: [],
@@ -34,10 +34,10 @@ test.describe('Status Bar', () => {
   test('shows connected serial indicator when seeded from backend', async ({ page }) => {
     await mockInvoke(page, {
       get_connection_status: {
-        serial_connected: true,
-        serial_port: '/dev/cu.usbserial-1420',
-        audio_streaming: false,
-        audio_device: null,
+        serialConnected: true,
+        serialPort: '/dev/cu.usbserial-1420',
+        audioStreaming: false,
+        audioDevice: null,
       },
       list_audio_devices: [],
       list_serial_ports: [],
@@ -70,16 +70,16 @@ test.describe('Error Toasts', () => {
   test('serial-disconnected event resets serial panel to N/C', async ({ page }) => {
     await mockInvoke(page, {
       get_connection_status: {
-        serial_connected: false,
-        serial_port: null,
-        audio_streaming: false,
-        audio_device: null,
+        serialConnected: false,
+        serialPort: null,
+        audioStreaming: false,
+        audioDevice: null,
       },
-      list_serial_ports: [{ name: '/dev/cu.usbserial-1420', port_type: 'USB (10C4:EA60)' }],
+      list_serial_ports: [{ name: '/dev/cu.usbserial-1420', portType: 'USB (10C4:EA60)' }],
       connect_serial: {
         port: '/dev/cu.usbserial-1420',
-        baud_rate: 38400,
-        frequency_hz: 14070000,
+        baudRate: 38400,
+        frequencyHz: 14070000,
         mode: 'DATA-USB',
         connected: true,
       },
@@ -116,13 +116,13 @@ test.describe('Error Toasts', () => {
   test('audio-status error event resets audio panel', async ({ page }) => {
     await mockInvoke(page, {
       get_connection_status: {
-        serial_connected: false,
-        serial_port: null,
-        audio_streaming: false,
-        audio_device: null,
+        serialConnected: false,
+        serialPort: null,
+        audioStreaming: false,
+        audioDevice: null,
       },
       list_audio_devices: [
-        { id: 'mic-1', name: 'Built-in Microphone', is_input: true, is_default: true },
+        { id: 'mic-1', name: 'Built-in Microphone', isInput: true, isDefault: true },
       ],
       start_audio_stream: null,
       list_serial_ports: [],
@@ -147,22 +147,22 @@ test.describe('Full Application Flow', () => {
   test('connect serial → start audio → receive text → transmit → disconnect', async ({ page }) => {
     await mockInvoke(page, {
       get_connection_status: {
-        serial_connected: false,
-        serial_port: null,
-        audio_streaming: false,
-        audio_device: null,
+        serialConnected: false,
+        serialPort: null,
+        audioStreaming: false,
+        audioDevice: null,
       },
-      list_serial_ports: [{ name: '/dev/cu.usbserial-1420', port_type: 'USB (10C4:EA60)' }],
+      list_serial_ports: [{ name: '/dev/cu.usbserial-1420', portType: 'USB (10C4:EA60)' }],
       connect_serial: {
         port: '/dev/cu.usbserial-1420',
-        baud_rate: 38400,
-        frequency_hz: 14070000,
+        baudRate: 38400,
+        frequencyHz: 14070000,
         mode: 'DATA-USB',
         connected: true,
       },
       disconnect_serial: null,
       list_audio_devices: [
-        { id: 'mic-1', name: 'FT-991A USB Audio CODEC', is_input: true, is_default: false },
+        { id: 'mic-1', name: 'FT-991A USB Audio CODEC', isInput: true, isDefault: false },
       ],
       start_audio_stream: null,
       stop_audio_stream: null,

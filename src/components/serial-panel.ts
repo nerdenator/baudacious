@@ -121,7 +121,7 @@ export function setupSerialPanel(): void {
       setSerialState(true, port);
 
       // Detect band from reported frequency and update controls
-      const band = detectBand(info.frequency_hz);
+      const band = detectBand(info.frequencyHz);
       activeBand = band;
       bandSelect.disabled = false;
       freqInput.disabled = false;
@@ -129,12 +129,12 @@ export function setupSerialPanel(): void {
         bandSelect.value = band.name;
         applyBandToInput(band, freqInput, rangeHint);
         // Show actual current freq (may differ from the calling freq)
-        freqInput.value = (info.frequency_hz / 1e6).toFixed(3);
+        freqInput.value = (info.frequencyHz / 1e6).toFixed(3);
       } else {
         bandSelect.value = '';
         freqInput.min = '1.8';
         freqInput.max = '30';
-        freqInput.value = (info.frequency_hz / 1e6).toFixed(3);
+        freqInput.value = (info.frequencyHz / 1e6).toFixed(3);
         if (rangeHint) rangeHint.textContent = '';
       }
       if (freqMode) freqMode.textContent = info.mode;
@@ -229,7 +229,7 @@ async function populateDropdown(dropdown: HTMLSelectElement): Promise<void> {
     for (const port of ports) {
       const option = document.createElement('option');
       option.value = port.name;
-      option.textContent = `${port.name} (${port.port_type})`;
+      option.textContent = `${port.name} (${port.portType})`;
       dropdown.appendChild(option);
     }
   } catch (err) {

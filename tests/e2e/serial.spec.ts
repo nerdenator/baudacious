@@ -12,8 +12,8 @@ test.describe('Serial Panel', () => {
   test('serial port dropdown populates from backend', async ({ page }) => {
     await mockInvoke(page, {
       list_serial_ports: [
-        { name: '/dev/cu.usbserial-1420', port_type: 'USB (10C4:EA60)' },
-        { name: '/dev/cu.usbserial-1430', port_type: 'USB (10C4:EA60)' },
+        { name: '/dev/cu.usbserial-1420', portType: 'USB (10C4:EA60)' },
+        { name: '/dev/cu.usbserial-1430', portType: 'USB (10C4:EA60)' },
       ],
     });
 
@@ -32,12 +32,12 @@ test.describe('Serial Panel', () => {
   test('connect button updates frequency display on success', async ({ page }) => {
     await mockInvoke(page, {
       list_serial_ports: [
-        { name: '/dev/cu.usbserial-1420', port_type: 'USB (10C4:EA60)' },
+        { name: '/dev/cu.usbserial-1420', portType: 'USB (10C4:EA60)' },
       ],
       connect_serial: {
         port: '/dev/cu.usbserial-1420',
-        baud_rate: 38400,
-        frequency_hz: 14070000,
+        baudRate: 38400,
+        frequencyHz: 14070000,
         mode: 'DATA-USB',
         connected: true,
       },
@@ -63,12 +63,12 @@ test.describe('Serial Panel', () => {
   test('CAT status indicator shows connected after connect', async ({ page }) => {
     await mockInvoke(page, {
       list_serial_ports: [
-        { name: '/dev/cu.usbserial-1420', port_type: 'USB (10C4:EA60)' },
+        { name: '/dev/cu.usbserial-1420', portType: 'USB (10C4:EA60)' },
       ],
       connect_serial: {
         port: '/dev/cu.usbserial-1420',
-        baud_rate: 38400,
-        frequency_hz: 14070000,
+        baudRate: 38400,
+        frequencyHz: 14070000,
         mode: 'DATA-USB',
         connected: true,
       },
@@ -92,12 +92,12 @@ test.describe('Serial Panel', () => {
   test('disconnect button resets UI', async ({ page }) => {
     await mockInvoke(page, {
       list_serial_ports: [
-        { name: '/dev/cu.usbserial-1420', port_type: 'USB (10C4:EA60)' },
+        { name: '/dev/cu.usbserial-1420', portType: 'USB (10C4:EA60)' },
       ],
       connect_serial: {
         port: '/dev/cu.usbserial-1420',
-        baud_rate: 38400,
-        frequency_hz: 14070000,
+        baudRate: 38400,
+        frequencyHz: 14070000,
         mode: 'DATA-USB',
         connected: true,
       },
@@ -132,7 +132,7 @@ test.describe('Serial Panel', () => {
   test('error message displays on connection failure', async ({ page }) => {
     await mockInvoke(page, {
       list_serial_ports: [
-        { name: '/dev/cu.usbserial-1420', port_type: 'USB (10C4:EA60)' },
+        { name: '/dev/cu.usbserial-1420', portType: 'USB (10C4:EA60)' },
       ],
     });
 

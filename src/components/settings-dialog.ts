@@ -225,8 +225,8 @@ export function setupSettingsDialog(deps: SettingsDialogDeps): void {
     while (audioOutputSelect.options.length > 1) audioOutputSelect.remove(1);
 
     for (const device of devices) {
-      const label = device.name + (device.is_default ? ' (Default)' : '');
-      if (device.is_input) {
+      const label = device.name + (device.isDefault ? ' (Default)' : '');
+      if (device.isInput) {
         audioInputSelect.appendChild(option(device.id, label));
       } else {
         audioOutputSelect.appendChild(option(device.id, label));

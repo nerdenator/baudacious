@@ -119,11 +119,11 @@ async function populateDropdowns(
       const option = document.createElement('option');
       option.value = device.id;
       option.textContent = device.name;
-      if (device.is_default) {
+      if (device.isDefault) {
         option.textContent += ' (Default)';
       }
 
-      if (device.is_input) {
+      if (device.isInput) {
         inputDropdown.appendChild(option);
       } else if (outputDropdown) {
         outputDropdown.appendChild(option.cloneNode(true) as HTMLOptionElement);

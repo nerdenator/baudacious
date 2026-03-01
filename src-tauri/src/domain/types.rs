@@ -29,6 +29,7 @@ impl Frequency {
 
 /// Information about an audio device
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AudioDeviceInfo {
     pub id: String,
     pub name: String,
@@ -38,6 +39,7 @@ pub struct AudioDeviceInfo {
 
 /// Information about a serial port
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SerialPortInfo {
     pub name: String,
     pub port_type: String,
@@ -94,6 +96,7 @@ impl Default for ModemStatus {
 
 /// Radio connection information returned after successful connect
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RadioInfo {
     pub port: String,
     pub baud_rate: u32,

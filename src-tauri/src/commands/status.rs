@@ -9,6 +9,7 @@ use crate::state::AppState;
 /// Snapshot of runtime connection state, returned by `get_connection_status`.
 /// Used by the frontend status bar to reconstruct indicator state after a reload.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConnectionStatus {
     pub serial_connected: bool,
     pub serial_port: Option<String>,

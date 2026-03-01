@@ -68,10 +68,18 @@ pub fn start_audio_stream(
     let running = state.audio_running.clone();
     running.store(true, Ordering::SeqCst);
 
-    *state
+    if let Err(e) = state
         .audio_device_name
         .lock()
-        .map_err(|_| "Audio state corrupted".to_string())? = Some(device_id.clone());
+        .map(|mut name| *name = Some(device_id.clone()))
+        .map_err(|_| "Audio state corrupted".to_string())
+    {
+        running.store(false, Ordering::SeqCst);
+        let _ = app.emit("audio-status", AudioStatusPayload {
+            status: format!("error: {e}"),
+        });
+        return Err(e);
+    }
 
     let rx_running = state.rx_running.clone();
     let rx_carrier_freq = state.rx_carrier_freq.clone();

@@ -24,16 +24,16 @@ const DEFAULT_CONFIG = {
 /** Base mocks used by most settings tests */
 const BASE_MOCKS = {
   get_connection_status: {
-    serial_connected: false,
-    serial_port: null,
-    audio_streaming: false,
-    audio_device: null,
+    serialConnected: false,
+    serialPort: null,
+    audioStreaming: false,
+    audioDevice: null,
   },
   list_configurations: ['Default', 'Contest'],
   load_configuration: DEFAULT_CONFIG,
   list_audio_devices: [
-    { id: 'mic-1', name: 'Built-in Microphone', is_input: true, is_default: true },
-    { id: 'spk-1', name: 'Built-in Speakers', is_input: false, is_default: true },
+    { id: 'mic-1', name: 'Built-in Microphone', isInput: true, isDefault: true },
+    { id: 'spk-1', name: 'Built-in Speakers', isInput: false, isDefault: true },
   ],
   save_configuration: null,
   delete_configuration: null,

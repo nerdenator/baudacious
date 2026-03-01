@@ -57,6 +57,6 @@ export function onAudioChanged(cb: AudioCallback): void {
  *  reflects actual hardware state even after a webview reload. */
 export async function hydrateFromBackend(): Promise<void> {
   const status = await getConnectionStatus();
-  setSerialState(status.serial_connected, status.serial_port);
-  setAudioState(status.audio_streaming, status.audio_device);
+  setSerialState(status.serialConnected, status.serialPort);
+  setAudioState(status.audioStreaming, status.audioDevice);
 }

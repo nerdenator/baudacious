@@ -3,13 +3,13 @@
 export interface AudioDeviceInfo {
   id: string;
   name: string;
-  is_input: boolean;
-  is_default: boolean;
+  isInput: boolean;
+  isDefault: boolean;
 }
 
 export interface SerialPortInfo {
   name: string;
-  port_type: string;
+  portType: string;
 }
 
 export interface Configuration {
@@ -27,8 +27,8 @@ export interface Configuration {
 
 export interface RadioInfo {
   port: string;
-  baud_rate: number;
-  frequency_hz: number;
+  baudRate: number;
+  frequencyHz: number;
   mode: string;
   connected: boolean;
 }
@@ -38,8 +38,8 @@ export interface MenuEvent {
 }
 
 export interface ConnectionStatus {
-  serial_connected: boolean;
-  serial_port: string | null;
-  audio_streaming: boolean;
-  audio_device: string | null;
+  serialConnected: boolean;
+  serialPort: string | null;
+  audioStreaming: boolean;
+  audioDevice: string | null;
 }
