@@ -23,7 +23,10 @@ impl ClockRecovery {
             omega: samples_per_symbol,
             gain_omega: 0.001,
             last_symbol: 0.0,
-            sample_count: 0.0,
+            // Start the counter at the half-symbol offset so the first decision
+            // fires at sample (samples_per_symbol/2 - 1), i.e. the envelope peak
+            // for a correct PSK-31 signal where transitions straddle symbol boundaries.
+            sample_count: samples_per_symbol / 2.0,
         }
     }
 
@@ -68,7 +71,7 @@ impl ClockRecovery {
     pub fn reset(&mut self) {
         self.omega = self.samples_per_symbol;
         self.last_symbol = 0.0;
-        self.sample_count = 0.0;
+        self.sample_count = self.samples_per_symbol / 2.0;
     }
 }
 
@@ -127,6 +130,6 @@ mod tests {
         cr.reset();
         assert_eq!(cr.omega, sps);
         assert_eq!(cr.last_symbol, 0.0);
-        assert_eq!(cr.sample_count, 0.0);
+        assert_eq!(cr.sample_count, sps / 2.0);
     }
 }

@@ -6,11 +6,18 @@
 //! a '0' bit flips the phase by 180°. Think of it like Python's
 //! `itertools.accumulate` over the bit stream, toggling a boolean.
 //!
-//! The raised cosine shaper smooths phase transitions so the signal
-//! doesn't splatter across the band (like a key click filter for CW).
+//! Raised cosine shaping spans the *boundary* between symbols so that the
+//! phase flip always occurs at zero amplitude — no spectral splatter.
+//! Each symbol's envelope is assembled from two independent half-windows:
+//!
+//!   prev symbol               |  curr symbol
+//!   ──────────────────────────|──────────────────────────
+//!   2nd half: falling (1→0)   |  1st half: rising (0→1)
+//!   (only if curr will flip)  |  (only if curr flipped)
+//!
+//! The second half of each symbol depends on the *next* bit (look-ahead).
 
 use crate::dsp::nco::Nco;
-use crate::dsp::raised_cosine::RaisedCosineShaper;
 use crate::modem::varicode::Varicode;
 
 /// At 48 kHz sample rate and 31.25 baud, each symbol is exactly 1536 samples
@@ -79,42 +86,65 @@ impl Psk31Encoder {
 
     /// Convert a bit stream to BPSK-modulated audio samples.
     ///
-    /// For each bit:
-    /// - Generate 1536 carrier samples from the NCO
-    /// - Multiply by the raised cosine envelope
-    /// - If the bit is '0', flip the carrier phase by π (180°)
+    /// Each symbol is split into two 768-sample halves. The envelope shape of
+    /// each half is chosen independently:
+    ///
+    ///   first half  — rising (0→1) if this symbol flips phase, else flat (1)
+    ///   second half — falling (1→0) if the *next* symbol will flip, else flat (1)
+    ///
+    /// The phase flip still fires at t=0 of the symbol, but by then the previous
+    /// symbol's falling second half has already ramped the amplitude to zero, so
+    /// the discontinuity is inaudible.
     fn bits_to_samples(&self, bits: &[bool]) -> Vec<f32> {
         let mut nco = Nco::new(self.carrier_freq, self.sample_rate as f64);
-        let shaper = RaisedCosineShaper::new(SAMPLES_PER_SYMBOL);
+        let half = SAMPLES_PER_SYMBOL / 2; // 768 samples
+
+        // Precompute the two half-window shapes once.
+        //
+        // Both are derived from |cos(π·t)| over a full symbol period, split at
+        // the midpoint so that rising[0]==0, rising[767]≈1, falling[0]==1,
+        // falling[767]≈0 — they meet at zero exactly at the symbol boundary.
+        //
+        // rising[k]  = |cos(π · (k + half) / SAMPLES_PER_SYMBOL)|  (second half of V)
+        // falling[k] = |cos(π ·  k          / SAMPLES_PER_SYMBOL)|  (first  half of V)
+        let rising: Vec<f32> = (0..half)
+            .map(|k| {
+                let t = (k + half) as f32 / SAMPLES_PER_SYMBOL as f32;
+                (std::f32::consts::PI * t).cos().abs()
+            })
+            .collect();
+
+        let falling: Vec<f32> = (0..half)
+            .map(|k| {
+                let t = k as f32 / SAMPLES_PER_SYMBOL as f32;
+                (std::f32::consts::PI * t).cos().abs()
+            })
+            .collect();
+
+        let flat = vec![1.0f32; half];
 
         let total_samples = bits.len() * SAMPLES_PER_SYMBOL;
         let mut samples = Vec::with_capacity(total_samples);
 
-        for &bit in bits {
-            // bit=false means phase change (BPSK convention)
-            let phase_change = !bit;
+        for (i, &bit) in bits.iter().enumerate() {
+            let phase_change = !bit; // bit=false → phase change (BPSK convention)
+            let next_phase_change = i + 1 < bits.len() && !bits[i + 1];
 
-            // Get the envelope shape for this symbol
-            let envelope = shaper.generate_envelope(phase_change);
-
-            // TODO: phase flip timing bug. The phase is flipped here at the START of the
-            // symbol, but the envelope is 1.0 at the symbol start (and dips to 0 at the
-            // midpoint). This causes a hard discontinuity at full amplitude — exactly what
-            // raised cosine shaping is supposed to prevent. Correct PSK-31 requires the
-            // phase to flip when the envelope crosses zero, i.e. the transition should span
-            // the boundary between the previous and current symbol:
-            //   - first half of current symbol: old phase × falling envelope (1→0)
-            //   - second half of current symbol: new phase × rising envelope (0→1)
-            // Fixing this requires restructuring bits_to_samples to look ahead at the next
-            // bit. The current approach passes loopback tests but causes spectral splatter.
+            // Flip phase at t=0. The previous symbol's falling second half has
+            // already driven amplitude to zero, so there is no discontinuity.
             if phase_change {
                 nco.adjust_phase(std::f64::consts::PI);
             }
 
-            // Generate carrier samples shaped by the envelope
-            for i in 0..SAMPLES_PER_SYMBOL {
-                let carrier = nco.next();
-                samples.push(carrier * envelope[i]);
+            // First half: rising from zero if this symbol flipped, else constant.
+            let first_half: &[f32] = if phase_change { &rising } else { &flat };
+
+            // Second half: falling toward zero if the next symbol will flip,
+            // else constant — the next symbol's rising half will then take over.
+            let second_half: &[f32] = if next_phase_change { &falling } else { &flat };
+
+            for &env in first_half.iter().chain(second_half.iter()) {
+                samples.push(nco.next() * env);
             }
         }
 
