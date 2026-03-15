@@ -14,6 +14,7 @@ pub fn list_serial_ports() -> Result<Vec<SerialPortInfo>, String> {
         return Ok(vec![SerialPortInfo {
             name: "mock".to_string(),
             port_type: "Mock Radio".to_string(),
+            device_hint: None,
         }]);
     }
     SerialPortFactory::list_ports().map_err(|e| e.to_string())

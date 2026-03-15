@@ -43,6 +43,7 @@ pub struct AudioDeviceInfo {
 pub struct SerialPortInfo {
     pub name: String,
     pub port_type: String,
+    pub device_hint: Option<String>,
 }
 
 fn default_tx_power_watts() -> u32 {

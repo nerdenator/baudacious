@@ -75,7 +75,7 @@ test.describe('Error Toasts', () => {
         audioStreaming: false,
         audioDevice: null,
       },
-      list_serial_ports: [{ name: '/dev/cu.usbserial-1420', portType: 'USB (10C4:EA60)' }],
+      list_serial_ports: [{ name: '/dev/cu.usbserial-1420', portType: 'USB (10C4:EA60)', deviceHint: null }],
       connect_serial: {
         port: '/dev/cu.usbserial-1420',
         baudRate: 38400,
@@ -152,7 +152,7 @@ test.describe('Full Application Flow', () => {
         audioStreaming: false,
         audioDevice: null,
       },
-      list_serial_ports: [{ name: '/dev/cu.usbserial-1420', portType: 'USB (10C4:EA60)' }],
+      list_serial_ports: [{ name: '/dev/cu.usbserial-1420', portType: 'USB (10C4:EA60)', deviceHint: null }],
       connect_serial: {
         port: '/dev/cu.usbserial-1420',
         baudRate: 38400,

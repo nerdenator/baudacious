@@ -9,6 +9,17 @@ use std::time::Duration;
 use crate::domain::{Psk31Error, Psk31Result, SerialPortInfo};
 use crate::ports::{SerialConnection, SerialFactory};
 
+/// Return a human-readable device label for a known USB VID:PID pair.
+fn known_device(vid: u16, pid: u16) -> Option<&'static str> {
+    match (vid, pid) {
+        (0x10C4, 0xEA60) => Some("Yaesu FT-991A / CP210x"),
+        (0x0403, 0x6001) => Some("FTDI USB Serial"),
+        (0x0403, 0x6015) => Some("FTDI USB Serial"),
+        (0x067B, 0x2303) => Some("Prolific USB Serial"),
+        _ => None,
+    }
+}
+
 /// Zero-sized factory for creating serial port connections.
 pub struct SerialPortFactory;
 
@@ -20,17 +31,20 @@ impl SerialFactory for SerialPortFactory {
         Ok(ports
             .into_iter()
             .map(|p| {
-                let port_type = match &p.port_type {
+                let (port_type, device_hint) = match &p.port_type {
                     serialport::SerialPortType::UsbPort(info) => {
-                        format!("USB ({:04X}:{:04X})", info.vid, info.pid)
+                        let label = format!("USB ({:04X}:{:04X})", info.vid, info.pid);
+                        let hint = known_device(info.vid, info.pid).map(|s| s.to_string());
+                        (label, hint)
                     }
-                    serialport::SerialPortType::PciPort => "PCI".to_string(),
-                    serialport::SerialPortType::BluetoothPort => "Bluetooth".to_string(),
-                    serialport::SerialPortType::Unknown => "Native".to_string(),
+                    serialport::SerialPortType::PciPort => ("PCI".to_string(), None),
+                    serialport::SerialPortType::BluetoothPort => ("Bluetooth".to_string(), None),
+                    serialport::SerialPortType::Unknown => ("Native".to_string(), None),
                 };
                 SerialPortInfo {
                     name: p.port_name,
                     port_type,
+                    device_hint,
                 }
             })
             .collect())

@@ -229,8 +229,21 @@ async function populateDropdown(dropdown: HTMLSelectElement): Promise<void> {
     for (const port of ports) {
       const option = document.createElement('option');
       option.value = port.name;
-      option.textContent = `${port.name} (${port.portType})`;
+      option.textContent = port.deviceHint
+        ? `${port.name} — ${port.deviceHint}`
+        : `${port.name} (${port.portType})`;
+      if (port.deviceHint) {
+        option.classList.add('port-known');
+      }
       dropdown.appendChild(option);
+    }
+
+    // Auto-select if exactly one port has a known device hint and nothing is selected yet
+    if (!dropdown.value) {
+      const knownPorts = ports.filter(p => p.deviceHint);
+      if (knownPorts.length === 1) {
+        dropdown.value = knownPorts[0].name;
+      }
     }
   } catch (err) {
     console.error('Failed to list serial ports:', err);

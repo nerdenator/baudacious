@@ -12,8 +12,8 @@ test.describe('Serial Panel', () => {
   test('serial port dropdown populates from backend', async ({ page }) => {
     await mockInvoke(page, {
       list_serial_ports: [
-        { name: '/dev/cu.usbserial-1420', portType: 'USB (10C4:EA60)' },
-        { name: '/dev/cu.usbserial-1430', portType: 'USB (10C4:EA60)' },
+        { name: '/dev/cu.usbserial-1420', portType: 'USB (10C4:EA60)', deviceHint: 'Yaesu FT-991A / CP210x' },
+        { name: '/dev/cu.usbserial-1430', portType: 'USB (10C4:EA60)', deviceHint: null },
       ],
     });
 
@@ -32,7 +32,7 @@ test.describe('Serial Panel', () => {
   test('connect button updates frequency display on success', async ({ page }) => {
     await mockInvoke(page, {
       list_serial_ports: [
-        { name: '/dev/cu.usbserial-1420', portType: 'USB (10C4:EA60)' },
+        { name: '/dev/cu.usbserial-1420', portType: 'USB (10C4:EA60)', deviceHint: null },
       ],
       connect_serial: {
         port: '/dev/cu.usbserial-1420',
@@ -63,7 +63,7 @@ test.describe('Serial Panel', () => {
   test('CAT status indicator shows connected after connect', async ({ page }) => {
     await mockInvoke(page, {
       list_serial_ports: [
-        { name: '/dev/cu.usbserial-1420', portType: 'USB (10C4:EA60)' },
+        { name: '/dev/cu.usbserial-1420', portType: 'USB (10C4:EA60)', deviceHint: null },
       ],
       connect_serial: {
         port: '/dev/cu.usbserial-1420',
@@ -92,7 +92,7 @@ test.describe('Serial Panel', () => {
   test('disconnect button resets UI', async ({ page }) => {
     await mockInvoke(page, {
       list_serial_ports: [
-        { name: '/dev/cu.usbserial-1420', portType: 'USB (10C4:EA60)' },
+        { name: '/dev/cu.usbserial-1420', portType: 'USB (10C4:EA60)', deviceHint: null },
       ],
       connect_serial: {
         port: '/dev/cu.usbserial-1420',
@@ -132,7 +132,7 @@ test.describe('Serial Panel', () => {
   test('error message displays on connection failure', async ({ page }) => {
     await mockInvoke(page, {
       list_serial_ports: [
-        { name: '/dev/cu.usbserial-1420', portType: 'USB (10C4:EA60)' },
+        { name: '/dev/cu.usbserial-1420', portType: 'USB (10C4:EA60)', deviceHint: null },
       ],
     });
 

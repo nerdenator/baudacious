@@ -10,6 +10,7 @@ export interface AudioDeviceInfo {
 export interface SerialPortInfo {
   name: string;
   portType: string;
+  deviceHint?: string;
 }
 
 export interface Configuration {
