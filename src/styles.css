@@ -192,7 +192,7 @@ html, body {
   justify-content: space-between;
   align-items: center;
   padding: var(--gap-sm) var(--gap-md);
-  background: linear-gradient(to bottom, rgba(10, 12, 14, 0.95), transparent);
+  background: var(--bg-primary);
   z-index: 10;
 }
 
@@ -221,7 +221,7 @@ html, body {
 
 .wf-palette-select {
   appearance: none;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--bg-secondary);
   border: 1px solid var(--border-subtle);
   border-radius: 3px;
   color: var(--text-secondary);
@@ -245,7 +245,7 @@ html, body {
 }
 
 .wf-zoom-btn {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--bg-secondary);
   border: 1px solid var(--border-subtle);
   border-radius: 3px;
   color: var(--text-dim);
