@@ -20,28 +20,10 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::adapters::cpal_audio::CpalAudioOutput;
 use crate::commands::radio::with_radio;
+use crate::domain::data_mode_for_frequency;
 use crate::modem::encoder::Psk31Encoder;
 use crate::ports::{AudioOutput, RadioControl};
 use crate::state::AppState;
-
-/// Determine the correct PSK-31 DATA mode for a given radio frequency.
-///
-/// By HF convention:
-/// - Below 10 MHz (160m, 80m, 40m): lower sideband → DATA-LSB
-/// - 10 MHz and above (30m through 10m): upper sideband → DATA-USB
-///
-/// Exception: 60m (5.332–5.405 MHz) is USB-only per FCC Part 97.307(f)(11).
-pub fn data_mode_for_frequency(hz: f64) -> &'static str {
-    // 60m: FCC Part 97.307(f)(11) mandates USB regardless of the below-10-MHz convention
-    if (5_332_000.0..=5_405_000.0).contains(&hz) {
-        return "DATA-USB";
-    }
-    if hz < 10_000_000.0 {
-        "DATA-LSB"
-    } else {
-        "DATA-USB"
-    }
-}
 
 /// Query the radio's current frequency and mode; if the mode is not the correct
 /// DATA variant for that frequency, correct it.

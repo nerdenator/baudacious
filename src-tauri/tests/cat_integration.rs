@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use baudacious_lib::adapters::ft991a::Ft991aRadio;
 use baudacious_lib::adapters::mock_radio::MockRadio;
-use baudacious_lib::commands::tx::data_mode_for_frequency;
+use baudacious_lib::domain::data_mode_for_frequency;
 use baudacious_lib::domain::{Frequency, Psk31Result};
 use baudacious_lib::ports::{RadioControl, SerialConnection};
 use baudacious_lib::state::AppState;

@@ -5,8 +5,10 @@
 
 pub mod config;
 pub mod error;
+pub mod frequency;
 pub mod types;
 
 pub use config::*;
 pub use error::*;
+pub use frequency::*;
 pub use types::*;
