@@ -16,7 +16,7 @@ import { setupAudioPanel, resetAudioPanel, setSelectedAudioDevices } from './com
 import { setupStatusBar } from './components/status-bar';
 import { showToast } from './components/toast';
 import { setupMenuEvents } from './services/event-handlers';
-import { startFftBridge, listenAudioStatus } from './services/audio-bridge';
+import { startFftBridge, listenAudioStatus, listenAudioStreamDot } from './services/audio-bridge';
 import { startRxBridge } from './services/rx-bridge';
 import { startSerialBridge } from './services/serial-bridge';
 import { appendRxText } from './components/rx-display';
@@ -57,6 +57,11 @@ window.addEventListener('DOMContentLoaded', () => {
       showToast('Audio device lost', 'error');
     }
   });
+
+  const streamDot = document.getElementById('audio-stream-dot');
+  if (streamDot) {
+    listenAudioStreamDot(streamDot);
+  }
 
   // Wire up serial bridge: backend-initiated disconnect → toast + reset UI
   startSerialBridge().catch((err) => {

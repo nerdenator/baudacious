@@ -34,6 +34,13 @@ export async function listenAudioStatus(
   });
 }
 
+/** Wire a dot element to audio status: pulses amber while streaming, dark otherwise */
+export async function listenAudioStreamDot(dotEl: HTMLElement): Promise<void> {
+  await listenAudioStatus((status) => {
+    dotEl.classList.toggle('active', status === 'streaming');
+  });
+}
+
 /** Stop listening for FFT events */
 export async function stopFftBridge(): Promise<void> {
   if (fftUnlisten) {

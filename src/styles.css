@@ -1256,3 +1256,28 @@ html, body {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* ============================================================
+   Audio streaming indicator dot
+   ============================================================ */
+
+.stream-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-disconnected);
+  margin-left: 6px;
+  vertical-align: middle;
+  transition: background 0.3s;
+}
+
+.stream-dot.active {
+  background: var(--accent-warning);
+  animation: stream-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes stream-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.35; }
+}
