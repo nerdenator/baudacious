@@ -127,6 +127,7 @@ export function setupWaterfallControls(
       btn.classList.toggle('active', parseInt(btn.dataset['zoom'] ?? '1', 10) === safeZoom);
     });
 
-    updateScale(...Object.values(waterfall.getVisibleRange()) as [number, number]);
+    const { startHz, endHz } = waterfall.getVisibleRange();
+    updateScale(startHz, endHz);
   };
 }

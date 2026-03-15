@@ -100,6 +100,7 @@ window.addEventListener('DOMContentLoaded', () => {
           waterfall_palette: settings.palette,
           waterfall_noise_floor: settings.noiseFloor,
           waterfall_zoom: settings.zoomLevel,
+          tx_power_watts: 25,
         };
       } else {
         currentConfig.waterfall_palette = settings.palette;

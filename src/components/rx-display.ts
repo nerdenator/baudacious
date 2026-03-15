@@ -5,7 +5,7 @@ let rxContentEl: HTMLElement | null = null;
 /** Append decoded text to the RX display and auto-scroll to bottom */
 export function appendRxText(text: string): void {
   if (!rxContentEl) return;
-  rxContentEl.textContent += text;
+  rxContentEl.appendChild(document.createTextNode(text));
 
   // Auto-scroll: keep the view pinned to the bottom as new text arrives
   rxContentEl.scrollTop = rxContentEl.scrollHeight;

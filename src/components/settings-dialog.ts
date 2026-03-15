@@ -266,6 +266,7 @@ export function setupSettingsDialog(deps: SettingsDialogDeps): void {
       waterfall_palette: base?.waterfall_palette ?? 'classic',
       waterfall_noise_floor: base?.waterfall_noise_floor ?? -100,
       waterfall_zoom: base?.waterfall_zoom ?? 1,
+      tx_power_watts: base?.tx_power_watts ?? 25,
     };
 
     saveBtn.disabled = true;

@@ -23,6 +23,7 @@ export interface Configuration {
   waterfall_palette: string;
   waterfall_noise_floor: number;
   waterfall_zoom: number;
+  tx_power_watts: number;
 }
 
 export interface RadioInfo {
