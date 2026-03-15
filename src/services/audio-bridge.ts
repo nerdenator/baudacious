@@ -40,6 +40,10 @@ export async function stopFftBridge(): Promise<void> {
     fftUnlisten();
     fftUnlisten = null;
   }
+}
+
+/** Stop listening for audio status events */
+export function stopAudioStatusBridge(): void {
   if (statusUnlisten) {
     statusUnlisten();
     statusUnlisten = null;
