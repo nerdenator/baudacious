@@ -62,12 +62,16 @@ impl AudioInput for CpalAudioInput {
             }
         }
 
-        // Output devices (for UI display — not used for capture)
+        // Output devices: enumerate ALL devices (not just host.output_devices()).
+        // On macOS/CoreAudio, USB audio interfaces like the FT-991A report zero
+        // supported output configs via the cpal API even though they physically
+        // support output. Including all devices lets the user select them; if a
+        // device truly can't be opened for output, start() will return an error.
         let default_output = host.default_output_device();
         let default_output_name = default_output.as_ref().and_then(|d| d.name().ok());
 
-        if let Ok(output_devices) = host.output_devices() {
-            for device in output_devices {
+        if let Ok(all_devices) = host.devices() {
+            for device in all_devices {
                 let name = device.name().unwrap_or_else(|_| "Unknown".to_string());
                 let is_default = default_output_name
                     .as_ref()
@@ -184,20 +188,22 @@ impl AudioOutput for CpalAudioOutput {
 
         let mut devices = Vec::new();
 
-        if let Ok(output_devices) = host.output_devices() {
-            for device in output_devices {
+        if let Ok(all_devices) = host.devices() {
+            for device in all_devices {
                 let name = device.name().unwrap_or_else(|_| "Unknown".to_string());
-                let is_default = default_output_name
-                    .as_ref()
-                    .map(|dn| dn == &name)
-                    .unwrap_or(false);
+                if device.supported_output_configs().map(|mut c| c.next().is_some()).unwrap_or(false) {
+                    let is_default = default_output_name
+                        .as_ref()
+                        .map(|dn| dn == &name)
+                        .unwrap_or(false);
 
-                devices.push(AudioDeviceInfo {
-                    id: name.clone(),
-                    name,
-                    is_input: false,
-                    is_default,
-                });
+                    devices.push(AudioDeviceInfo {
+                        id: name.clone(),
+                        name,
+                        is_input: false,
+                        is_default,
+                    });
+                }
             }
         }
 
@@ -216,7 +222,7 @@ impl AudioOutput for CpalAudioOutput {
         let host = cpal::default_host();
 
         let device = host
-            .output_devices()
+            .devices()
             .map_err(|e| Psk31Error::Audio(format!("Failed to enumerate devices: {e}")))?
             .find(|d| d.name().map(|n| n == device_id).unwrap_or(false))
             .ok_or_else(|| {
