@@ -29,6 +29,8 @@ pub fn encode(cmd: &CatCommand) -> String {
         PttOn => "TX1;".into(),
         GetTxPower => "PC;".into(),
         SetTxPower(w) => format!("PC{w:03};"),
+        GetSignalStrength => "SM0;".into(),
+        GetStatus => "IF;".into(),
     }
 }
 
@@ -111,6 +113,16 @@ mod tests {
     #[test]
     fn encode_set_tx_power_zero() {
         assert_eq!(encode(&SetTxPower(0)), "PC000;");
+    }
+
+    #[test]
+    fn encode_get_signal_strength() {
+        assert_eq!(encode(&GetSignalStrength), "SM0;");
+    }
+
+    #[test]
+    fn encode_get_status() {
+        assert_eq!(encode(&GetStatus), "IF;");
     }
 
     #[test]

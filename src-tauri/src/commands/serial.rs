@@ -36,12 +36,11 @@ pub fn connect_serial(
         (Box::new(Ft991aRadio::new(connection)), port.clone())
     };
 
-    // Auto-detect: read current frequency and mode from the radio (or mock)
-    let frequency_hz = radio
-        .get_frequency()
-        .map_err(|e| e.to_string())?
-        .as_hz();
-    let mode = radio.get_mode().map_err(|e| e.to_string())?;
+    // Auto-detect: one IF; query gives us freq + mode (+ RIT/split state) in a
+    // single serial round-trip instead of the two separate FA; + MD0; calls.
+    let status = radio.get_status().map_err(|e| e.to_string())?;
+    let frequency_hz = status.frequency_hz as f64;
+    let mode = status.mode;
 
     let info = RadioInfo {
         port: display_port.clone(),

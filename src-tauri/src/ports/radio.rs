@@ -1,6 +1,6 @@
 //! Radio control port trait
 
-use crate::domain::{Frequency, Psk31Result};
+use crate::domain::{Frequency, Psk31Result, RadioStatus};
 
 /// Trait for radio control (PTT, frequency, mode, TX power)
 pub trait RadioControl: Send {
@@ -30,4 +30,11 @@ pub trait RadioControl: Send {
 
     /// Set TX power in watts
     fn set_tx_power(&mut self, watts: u32) -> Psk31Result<()>;
+
+    /// Get S-meter signal strength, normalised 0.0–1.0 (from SM0 0–30 scale)
+    fn get_signal_strength(&mut self) -> Psk31Result<f32>;
+
+    /// Get comprehensive radio status via IF; (freq, mode, TX, RIT, split).
+    /// Preferred over separate get_frequency + get_mode calls on connect.
+    fn get_status(&mut self) -> Psk31Result<RadioStatus>;
 }

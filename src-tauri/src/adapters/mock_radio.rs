@@ -7,7 +7,7 @@
 //! Every RadioControl call is logged at INFO level so you can verify
 //! exactly what the UI would send to a real radio.
 
-use crate::domain::{Frequency, Psk31Result};
+use crate::domain::{Frequency, Psk31Result, RadioStatus};
 use crate::ports::RadioControl;
 
 /// Default frequency: 20m PSK-31 calling frequency
@@ -95,5 +95,26 @@ impl RadioControl for MockRadio {
         log::info!("[MOCK RADIO] SET TX POWER → PC{watts:03};  ({watts}W)");
         self.tx_power = watts;
         Ok(())
+    }
+
+    fn get_signal_strength(&mut self) -> Psk31Result<f32> {
+        log::info!("[MOCK RADIO] GET S-METER → SM0; → SM00009;  (0.30 normalized)");
+        Ok(0.3) // S3 approximately
+    }
+
+    fn get_status(&mut self) -> Psk31Result<RadioStatus> {
+        log::info!(
+            "[MOCK RADIO] GET STATUS → IF; → {:.3} MHz, mode={}",
+            self.frequency / 1e6,
+            self.mode
+        );
+        Ok(RadioStatus {
+            frequency_hz: self.frequency as u64,
+            mode: self.mode.clone(),
+            is_transmitting: self.is_transmitting,
+            rit_offset_hz: 0,
+            rit_enabled: false,
+            split: false,
+        })
     }
 }

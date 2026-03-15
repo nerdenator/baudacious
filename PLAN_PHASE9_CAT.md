@@ -398,6 +398,6 @@ UI: RIT offset display + up/down nudge buttons, clear button.
 
 ## Status
 
-- [ ] Session A: Foundation — `cat/` module, RF power, mode guard
-- [ ] Session B: Signal metering + status sync
+- [x] Session A: Foundation — `cat/` module, RF power, mode guard
+- [x] Session B: Signal metering + status sync
 - [ ] Session C: Advanced operation (split, RIT, IF filter)

@@ -84,3 +84,8 @@ pub fn get_mode(app: AppHandle, state: State<AppState>) -> Result<String, String
 pub fn set_mode(app: AppHandle, state: State<AppState>, mode: String) -> Result<(), String> {
     with_radio(&state, &app, |r| r.set_mode(&mode))
 }
+
+#[tauri::command]
+pub fn get_signal_strength(app: AppHandle, state: State<AppState>) -> Result<f32, String> {
+    with_radio(&state, &app, |r| r.get_signal_strength())
+}

@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use crate::cat::{CatCommand, CatResponse, CatSession};
-use crate::domain::{Frequency, Psk31Error, Psk31Result};
+use crate::domain::{Frequency, Psk31Error, Psk31Result, RadioStatus};
 use crate::ports::{RadioControl, SerialConnection};
 
 /// US amateur radio bands (FCC Part 97) as (low_hz, high_hz) pairs.
@@ -123,6 +123,32 @@ impl RadioControl for Ft991aRadio {
         }
         self.session.execute(&CatCommand::SetTxPower(watts))?;
         Ok(())
+    }
+
+    fn get_signal_strength(&mut self) -> Psk31Result<f32> {
+        match self.session.execute(&CatCommand::GetSignalStrength)? {
+            CatResponse::SignalStrength(s) => Ok(s),
+            _ => Err(Psk31Error::Cat(
+                "unexpected response for GetSignalStrength".into(),
+            )),
+        }
+    }
+
+    fn get_status(&mut self) -> Psk31Result<RadioStatus> {
+        match self.session.execute(&CatCommand::GetStatus)? {
+            CatResponse::Status(s) => {
+                if !is_amateur_frequency(s.frequency_hz) {
+                    return Err(Psk31Error::Cat(format!(
+                        "Frequency {} Hz is outside US amateur bands",
+                        s.frequency_hz
+                    )));
+                }
+                Ok(s)
+            }
+            _ => Err(Psk31Error::Cat(
+                "unexpected response for GetStatus".into(),
+            )),
+        }
     }
 }
 
@@ -282,6 +308,48 @@ mod tests {
         let (mut radio, log) = make_radio(";");
         radio.set_tx_power(50).unwrap();
         assert_eq!(log.lock().unwrap()[0], "PC050;");
+    }
+
+    // --- S-meter ---
+
+    #[test]
+    fn get_signal_strength_sends_sm0_query() {
+        let (mut radio, log) = make_radio("SM00015;");
+        let level = radio.get_signal_strength().unwrap();
+        assert_eq!(log.lock().unwrap()[0], "SM0;");
+        assert_eq!(level, 0.5); // 15/30
+    }
+
+    // --- Status (IF;) ---
+
+    fn make_if_body(freq: u64, mode_code: &str, tx: bool, rit_en: bool, rit_offset: i32, split: bool) -> String {
+        let freq_str = format!("{freq:011}");
+        let mode_padded = format!("0{mode_code}");
+        let rit_sign = if rit_offset < 0 { '-' } else { '+' };
+        let rit_abs = rit_offset.unsigned_abs();
+        let rit_str = format!("{rit_sign}{rit_abs:04}");
+        let rit_on = if rit_en { '1' } else { '0' };
+        let tx_char = if tx { '1' } else { '0' };
+        let split_char = if split { '1' } else { '0' };
+        format!("IF{freq_str}     {rit_str}{rit_on}0  0{tx_char}{mode_padded}00{split_char}00000;")
+    }
+
+    #[test]
+    fn get_status_sends_if_query() {
+        let response = make_if_body(14_070_000, "C", false, false, 0, false);
+        let (mut radio, log) = make_radio(&response);
+        let status = radio.get_status().unwrap();
+        assert_eq!(log.lock().unwrap()[0], "IF;");
+        assert_eq!(status.frequency_hz, 14_070_000);
+        assert_eq!(status.mode, "DATA-USB");
+    }
+
+    #[test]
+    fn get_status_rejects_non_amateur_frequency() {
+        // 10 MHz is between 30m and 20m, not an amateur allocation
+        let response = make_if_body(10_000_000, "C", false, false, 0, false);
+        let (mut radio, _) = make_radio(&response);
+        assert!(radio.get_status().is_err());
     }
 
     #[test]

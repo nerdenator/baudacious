@@ -4,7 +4,7 @@
 //! to expect in the response — the FT-991A uses the same prefix for
 //! queries and replies so we need the context to know what we're parsing.
 
-use crate::domain::{Psk31Error, Psk31Result};
+use crate::domain::{Psk31Error, Psk31Result, RadioStatus};
 
 use super::{CatCommand, CatResponse, MODE_TABLE};
 
@@ -32,6 +32,8 @@ pub fn decode(response: &str, cmd: &CatCommand) -> Psk31Result<CatResponse> {
         PttOn | PttOff => expect_ack(response, cmd),
         GetTxPower => parse_tx_power(response),
         SetTxPower(_) => expect_ack(response, cmd),
+        GetSignalStrength => parse_signal_strength(response),
+        GetStatus => parse_status(response),
     }
 }
 
@@ -79,6 +81,115 @@ fn parse_tx_power(response: &str) -> Psk31Result<CatResponse> {
         .parse::<u32>()
         .map_err(|e| Psk31Error::Cat(format!("Failed to parse TX power '{digits}': {e}")))?;
     Ok(CatResponse::TxPower(watts))
+}
+
+/// Parse `"SM00015;"` → `SignalStrength(0.5)`  (15 / 30 = 0.5)
+///
+/// Format: `"SM0"` + 4-digit value (0000–0030) + `";"`
+fn parse_signal_strength(response: &str) -> Psk31Result<CatResponse> {
+    let trimmed = response.trim().trim_end_matches(';');
+    if !trimmed.starts_with("SM0") || trimmed.len() < 7 {
+        return Err(Psk31Error::Cat(format!(
+            "Invalid S-meter response: '{response}'"
+        )));
+    }
+    let digits = &trimmed[3..7];
+    let raw: u32 = digits.parse().map_err(|e| {
+        Psk31Error::Cat(format!("Failed to parse S-meter value '{digits}': {e}"))
+    })?;
+    Ok(CatResponse::SignalStrength(raw.min(30) as f32 / 30.0))
+}
+
+/// Parse `"IF{37 chars};"` → `Status(RadioStatus)`
+///
+/// FT-991A IF response body layout (0-indexed, 37 chars total):
+///
+/// ```text
+/// [0..11]  VFO-A frequency, Hz, 11-digit zero-padded decimal
+/// [11..16] blank (clarifier display, 5 chars)
+/// [16..21] RIT/XIT offset: sign char ('+'/'-'/digit) + 4 decimal digits
+/// [21]     RIT on/off  (0=off, 1=on)
+/// [22]     XIT on/off  (0=off, 1=on)
+/// [23..25] memory channel (2 chars, blank in VFO mode)
+/// [25]     VFO/MEM indicator (0=VFO-A, 1=VFO-B, 2=MEM)
+/// [26]     TX status (0=RX, 1=TX, 2=TX tune)
+/// [27..29] mode code (2 hex chars with leading '0': "01"=LSB, "0C"=DATA-USB)
+/// [29..31] function, scan (ignored)
+/// [31]     split (0=simplex, 1=split)
+/// [32..37] tone, CTCSS, shift etc. (ignored)
+/// ```
+fn parse_status(response: &str) -> Psk31Result<CatResponse> {
+    let trimmed = response.trim().trim_end_matches(';');
+    if !trimmed.starts_with("IF") {
+        return Err(Psk31Error::Cat(format!(
+            "Invalid IF response (missing 'IF' prefix): '{response}'"
+        )));
+    }
+    let body = &trimmed[2..]; // strip "IF" prefix
+    if body.len() < 37 {
+        return Err(Psk31Error::Cat(format!(
+            "IF response body too short: {} chars (need 37): '{response}'",
+            body.len()
+        )));
+    }
+
+    // Frequency: [0..11]
+    let freq_str = &body[0..11];
+    let frequency_hz: u64 = freq_str.parse().map_err(|e| {
+        Psk31Error::Cat(format!("IF: failed to parse frequency '{freq_str}': {e}"))
+    })?;
+
+    // RIT offset: [16..21] — format is sign char + 4 decimal digits, e.g. "+1000" or "00000"
+    let rit_offset_hz = parse_rit_offset(&body[16..21]);
+
+    // RIT on/off: [21]
+    let rit_enabled = body.as_bytes()[21] == b'1';
+
+    // TX status: [26]  (0=RX, 1=TX w/CAT, 2=TX w/mic)
+    let is_transmitting = matches!(body.as_bytes()[26], b'1' | b'2');
+
+    // Mode: [27..29] — two hex chars with leading '0', e.g. "0C" → strip "0" → "C" → MODE_TABLE
+    let mode_code_padded = &body[27..29];
+    let mode_code = mode_code_padded.trim_start_matches('0');
+    let mode = if mode_code.is_empty() {
+        "DATA-USB".to_string()
+    } else {
+        MODE_TABLE
+            .iter()
+            .find(|(c, _)| *c == mode_code)
+            .map(|(_, n)| n.to_string())
+            .unwrap_or_else(|| {
+                log::warn!("IF: unknown mode code '{mode_code_padded}', defaulting to DATA-USB");
+                "DATA-USB".to_string()
+            })
+    };
+
+    // Split: [31]
+    let split = body.as_bytes().get(31).map(|&b| b != b'0').unwrap_or(false);
+
+    Ok(CatResponse::Status(RadioStatus {
+        frequency_hz,
+        mode,
+        is_transmitting,
+        rit_offset_hz,
+        rit_enabled,
+        split,
+    }))
+}
+
+/// Parse a 5-char RIT offset string into signed Hz.
+///
+/// Accepts formats like `"+1000"`, `"-0500"`, `"00000"` (no offset).
+/// Returns 0 on any parse failure (non-fatal: RIT offset is advisory).
+fn parse_rit_offset(s: &str) -> i32 {
+    if s.len() < 2 {
+        return 0;
+    }
+    match s.as_bytes()[0] {
+        b'+' => s[1..].parse::<i32>().unwrap_or(0),
+        b'-' => s[1..].parse::<i32>().unwrap_or(0).wrapping_neg(),
+        _ => s.parse::<i32>().unwrap_or(0),
+    }
 }
 
 /// For commands where the radio only returns `";"` (or empty Ack).
@@ -232,6 +343,146 @@ mod tests {
     #[test]
     fn decode_set_tx_power_ack() {
         assert_eq!(decode(";", &SetTxPower(25)).unwrap(), CatResponse::Ack);
+    }
+
+    // --- GetSignalStrength ---
+
+    #[test]
+    fn decode_signal_strength_half() {
+        // 15 / 30 = 0.5
+        assert_eq!(
+            decode("SM00015;", &GetSignalStrength).unwrap(),
+            CatResponse::SignalStrength(0.5)
+        );
+    }
+
+    #[test]
+    fn decode_signal_strength_zero() {
+        assert_eq!(
+            decode("SM00000;", &GetSignalStrength).unwrap(),
+            CatResponse::SignalStrength(0.0)
+        );
+    }
+
+    #[test]
+    fn decode_signal_strength_max() {
+        // 30 / 30 = 1.0
+        assert_eq!(
+            decode("SM00030;", &GetSignalStrength).unwrap(),
+            CatResponse::SignalStrength(1.0)
+        );
+    }
+
+    #[test]
+    fn decode_signal_strength_clamps_above_30() {
+        // Any value > 30 is clamped to 30 → 1.0
+        // (shouldn't happen in practice, but be defensive)
+        let r = decode("SM00030;", &GetSignalStrength).unwrap();
+        assert_eq!(r, CatResponse::SignalStrength(1.0));
+    }
+
+    #[test]
+    fn decode_signal_strength_too_short() {
+        assert!(decode("SM0;", &GetSignalStrength).is_err());
+    }
+
+    // --- GetStatus (IF;) ---
+
+    /// Build a valid 37-char IF response body for testing.
+    ///
+    /// Matches the byte layout documented in `parse_status`.
+    fn make_if_response(freq: u64, mode: &str, tx: bool, rit_en: bool, rit_offset: i32, split: bool) -> String {
+        let freq_str = format!("{freq:011}");
+        let code = MODE_TABLE
+            .iter()
+            .find(|(_, n)| *n == mode)
+            .map(|(c, _)| c)
+            .unwrap_or(&"C");
+        let mode_padded = format!("0{code}");
+        let rit_sign = if rit_offset < 0 { '-' } else { '+' };
+        let rit_abs = rit_offset.unsigned_abs();
+        let rit_str = format!("{rit_sign}{rit_abs:04}");
+        let rit_on = if rit_en { '1' } else { '0' };
+        let tx_char = if tx { '1' } else { '0' };
+        let split_char = if split { '1' } else { '0' };
+        // [0..11]=freq [11..16]=blank [16..21]=rit_str [21]=rit_on [22]=XIT_off
+        // [23..25]=mem [25]=VFO [26]=tx [27..29]=mode [29..31]=fn+scan [31]=split [32..37]=tail
+        let body = format!(
+            "{freq_str}     {rit_str}{rit_on}0  0{tx_char}{mode_padded}00{split_char}00000"
+        );
+        assert_eq!(body.len(), 37, "make_if_response: body must be 37 chars, got {}", body.len());
+        format!("IF{body};")
+    }
+
+    #[test]
+    fn decode_if_basic_20m_data_usb() {
+        let response = make_if_response(14_070_000, "DATA-USB", false, false, 0, false);
+        let s = match decode(&response, &GetStatus).unwrap() {
+            CatResponse::Status(s) => s,
+            _ => panic!("expected Status"),
+        };
+        assert_eq!(s.frequency_hz, 14_070_000);
+        assert_eq!(s.mode, "DATA-USB");
+        assert!(!s.is_transmitting);
+        assert!(!s.rit_enabled);
+        assert_eq!(s.rit_offset_hz, 0);
+        assert!(!s.split);
+    }
+
+    #[test]
+    fn decode_if_40m_data_lsb_transmitting() {
+        let response = make_if_response(7_035_000, "DATA-LSB", true, false, 0, false);
+        let s = match decode(&response, &GetStatus).unwrap() {
+            CatResponse::Status(s) => s,
+            _ => panic!("expected Status"),
+        };
+        assert_eq!(s.frequency_hz, 7_035_000);
+        assert_eq!(s.mode, "DATA-LSB");
+        assert!(s.is_transmitting);
+    }
+
+    #[test]
+    fn decode_if_rit_positive() {
+        let response = make_if_response(14_070_000, "DATA-USB", false, true, 500, false);
+        let s = match decode(&response, &GetStatus).unwrap() {
+            CatResponse::Status(s) => s,
+            _ => panic!("expected Status"),
+        };
+        assert!(s.rit_enabled);
+        assert_eq!(s.rit_offset_hz, 500);
+    }
+
+    #[test]
+    fn decode_if_rit_negative() {
+        let response = make_if_response(14_070_000, "DATA-USB", false, true, -250, false);
+        let s = match decode(&response, &GetStatus).unwrap() {
+            CatResponse::Status(s) => s,
+            _ => panic!("expected Status"),
+        };
+        assert!(s.rit_enabled);
+        assert_eq!(s.rit_offset_hz, -250);
+    }
+
+    #[test]
+    fn decode_if_split_on() {
+        let response = make_if_response(14_070_000, "DATA-USB", false, false, 0, true);
+        let s = match decode(&response, &GetStatus).unwrap() {
+            CatResponse::Status(s) => s,
+            _ => panic!("expected Status"),
+        };
+        assert!(s.split);
+    }
+
+    #[test]
+    fn decode_if_too_short() {
+        assert!(decode("IF12345;", &GetStatus).is_err());
+    }
+
+    #[test]
+    fn decode_if_missing_prefix() {
+        // 39-char string that doesn't start with "IF" should error
+        let body: String = std::iter::repeat('0').take(37).collect();
+        assert!(decode(&format!("XX{body};"), &GetStatus).is_err());
     }
 
     // --- Mode roundtrip ---

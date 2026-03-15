@@ -16,6 +16,8 @@ pub use decode::decode;
 pub use encode::encode;
 pub use session::CatSession;
 
+use crate::domain::RadioStatus;
+
 /// Single source of truth for FT-991A mode code ↔ name mapping.
 /// Each entry is (CAT code, human-readable name).
 pub const MODE_TABLE: &[(&str, &str)] = &[
@@ -52,6 +54,10 @@ pub enum CatCommand {
     GetTxPower,
     /// Watts, 0–100
     SetTxPower(u32),
+    // S-meter
+    GetSignalStrength,
+    // Comprehensive status (IF; command)
+    GetStatus,
 }
 
 /// Parsed responses from the FT-991A.
@@ -62,6 +68,10 @@ pub enum CatResponse {
     Mode(String),
     /// TX power in watts
     TxPower(u32),
+    /// S-meter level, normalised 0.0–1.0 from the 0–30 SM0 scale
+    SignalStrength(f32),
+    /// Full radio status from the IF; command
+    Status(RadioStatus),
     /// Command accepted; radio returned just ";"
     Ack,
 }
