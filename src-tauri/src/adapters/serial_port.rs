@@ -13,6 +13,7 @@ use crate::ports::{SerialConnection, SerialFactory};
 fn known_device(vid: u16, pid: u16) -> Option<&'static str> {
     match (vid, pid) {
         (0x10C4, 0xEA60) => Some("Yaesu FT-991A / CP210x"),
+        (0x10C4, 0xEA70) => Some("Yaesu FT-991A / CP2105 (SLAB_USBtoUART)"),
         (0x0403, 0x6001) => Some("FTDI USB Serial"),
         (0x0403, 0x6015) => Some("FTDI USB Serial"),
         (0x067B, 0x2303) => Some("Prolific USB Serial"),
@@ -53,6 +54,10 @@ impl SerialFactory for SerialPortFactory {
     fn open(port: &str, baud_rate: u32) -> Psk31Result<Box<dyn SerialConnection>> {
         let serial = serialport::new(port, baud_rate)
             .timeout(Duration::from_millis(100))
+            .data_bits(serialport::DataBits::Eight)
+            .stop_bits(serialport::StopBits::One)
+            .parity(serialport::Parity::None)
+            .flow_control(serialport::FlowControl::None)
             .open()
             .map_err(|e| Psk31Error::Serial(format!("Failed to open {port}: {e}")))?;
 

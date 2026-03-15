@@ -63,6 +63,7 @@ pub fn run() {
             commands::radio::get_mode,
             commands::radio::set_mode,
             commands::radio::get_signal_strength,
+            commands::radio::get_radio_state,
             // TX commands
             commands::tx::start_tx,
             commands::tx::stop_tx,

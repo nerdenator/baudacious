@@ -98,6 +98,7 @@ impl Default for ModemStatus {
 /// Comprehensive radio status returned from the IF; CAT command.
 /// Carries all the information needed to sync the UI on connect or poll.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RadioStatus {
     pub frequency_hz: u64,
     pub mode: String,

@@ -34,18 +34,24 @@ pub fn decode(response: &str, cmd: &CatCommand) -> Psk31Result<CatResponse> {
         SetTxPower(_) => expect_ack(response, cmd),
         GetSignalStrength => parse_signal_strength(response),
         GetStatus => parse_status(response),
+        // BandSelect is write-only — never decoded, but must be covered for exhaustiveness.
+        BandSelect(_) => expect_ack(response, cmd),
     }
 }
 
-/// Parse `"FA00014070000;"` → `FrequencyHz(14_070_000)`
+/// Parse `"FA00014070000;"` or `"FA007073900;"` → `FrequencyHz(N)`
+///
+/// The FT-991A returns variable-width frequency strings (9 or 11 digits depending
+/// on firmware/band).  We parse all digits after the `FA` prefix rather than
+/// assuming a fixed width.
 fn parse_frequency(response: &str) -> Psk31Result<CatResponse> {
     let trimmed = response.trim().trim_end_matches(';');
-    if !trimmed.starts_with("FA") || trimmed.len() < 13 {
+    if !trimmed.starts_with("FA") || trimmed.len() < 3 {
         return Err(Psk31Error::Cat(format!(
             "Invalid frequency response: '{response}'"
         )));
     }
-    let digits = &trimmed[2..13];
+    let digits = &trimmed[2..];
     let hz = digits
         .parse::<u64>()
         .map_err(|e| Psk31Error::Cat(format!("Failed to parse frequency '{digits}': {e}")))?;
@@ -100,23 +106,39 @@ fn parse_signal_strength(response: &str) -> Psk31Result<CatResponse> {
     Ok(CatResponse::SignalStrength(raw.min(30) as f32 / 30.0))
 }
 
-/// Parse `"IF{37 chars};"` → `Status(RadioStatus)`
+/// Parse `"IF{body};"` → `Status(RadioStatus)`
 ///
-/// FT-991A IF response body layout (0-indexed, 37 chars total):
+/// The FT-991A has two known IF response body lengths depending on firmware:
 ///
+/// **37-char format** (full):
 /// ```text
 /// [0..11]  VFO-A frequency, Hz, 11-digit zero-padded decimal
 /// [11..16] blank (clarifier display, 5 chars)
-/// [16..21] RIT/XIT offset: sign char ('+'/'-'/digit) + 4 decimal digits
+/// [16..21] RIT/XIT offset: sign char + 4 decimal digits
 /// [21]     RIT on/off  (0=off, 1=on)
 /// [22]     XIT on/off  (0=off, 1=on)
 /// [23..25] memory channel (2 chars, blank in VFO mode)
-/// [25]     VFO/MEM indicator (0=VFO-A, 1=VFO-B, 2=MEM)
+/// [25]     VFO/MEM indicator
 /// [26]     TX status (0=RX, 1=TX, 2=TX tune)
-/// [27..29] mode code (2 hex chars with leading '0': "01"=LSB, "0C"=DATA-USB)
+/// [27..29] mode code (2 chars with leading '0': "0C"=DATA-USB)
 /// [29..31] function, scan (ignored)
 /// [31]     split (0=simplex, 1=split)
 /// [32..37] tone, CTCSS, shift etc. (ignored)
+/// ```
+///
+/// **25-char format** (compact — omits blank padding, memory, and tail):
+/// ```text
+/// [0..11]  VFO-A frequency, Hz, 11-digit zero-padded decimal
+/// [11]     indicator (1 char)
+/// [12..17] RIT/XIT offset: sign char + 4 decimal digits
+/// [17]     RIT on/off  (0=off, 1=on)
+/// [18]     XIT on/off  (0=off, 1=on)
+/// [19]     mode code (1 char, no leading '0': "C"=DATA-USB)
+/// [20]     VFO/MEM indicator
+/// [21]     TX status (0=RX, 1=TX, 2=TX tune)
+/// [22]     function (ignored)
+/// [23]     scan (ignored)
+/// [24]     split (0=simplex, 1=split)
 /// ```
 fn parse_status(response: &str) -> Psk31Result<CatResponse> {
     let trimmed = response.trim().trim_end_matches(';');
@@ -126,45 +148,34 @@ fn parse_status(response: &str) -> Psk31Result<CatResponse> {
         )));
     }
     let body = &trimmed[2..]; // strip "IF" prefix
-    if body.len() < 37 {
-        return Err(Psk31Error::Cat(format!(
-            "IF response body too short: {} chars (need 37): '{response}'",
-            body.len()
-        )));
-    }
 
-    // Frequency: [0..11]
+    if body.len() >= 37 {
+        parse_status_full(body, response)
+    } else if body.len() >= 25 {
+        parse_status_compact(body, response)
+    } else {
+        Err(Psk31Error::Cat(format!(
+            "IF response body too short: {} chars (need 25 or 37): '{response}'",
+            body.len()
+        )))
+    }
+}
+
+/// Parse the 37-char full IF body format.
+fn parse_status_full(body: &str, _response: &str) -> Psk31Result<CatResponse> {
     let freq_str = &body[0..11];
     let frequency_hz: u64 = freq_str.parse().map_err(|e| {
         Psk31Error::Cat(format!("IF: failed to parse frequency '{freq_str}': {e}"))
     })?;
 
-    // RIT offset: [16..21] — format is sign char + 4 decimal digits, e.g. "+1000" or "00000"
     let rit_offset_hz = parse_rit_offset(&body[16..21]);
-
-    // RIT on/off: [21]
     let rit_enabled = body.as_bytes()[21] == b'1';
-
-    // TX status: [26]  (0=RX, 1=TX w/CAT, 2=TX w/mic)
     let is_transmitting = matches!(body.as_bytes()[26], b'1' | b'2');
 
-    // Mode: [27..29] — two hex chars with leading '0', e.g. "0C" → strip "0" → "C" → MODE_TABLE
     let mode_code_padded = &body[27..29];
     let mode_code = mode_code_padded.trim_start_matches('0');
-    let mode = if mode_code.is_empty() {
-        "DATA-USB".to_string()
-    } else {
-        MODE_TABLE
-            .iter()
-            .find(|(c, _)| *c == mode_code)
-            .map(|(_, n)| n.to_string())
-            .unwrap_or_else(|| {
-                log::warn!("IF: unknown mode code '{mode_code_padded}', defaulting to DATA-USB");
-                "DATA-USB".to_string()
-            })
-    };
+    let mode = lookup_mode(mode_code, mode_code_padded);
 
-    // Split: [31]
     let split = body.as_bytes().get(31).map(|&b| b != b'0').unwrap_or(false);
 
     Ok(CatResponse::Status(RadioStatus {
@@ -175,6 +186,53 @@ fn parse_status(response: &str) -> Psk31Result<CatResponse> {
         rit_enabled,
         split,
     }))
+}
+
+/// Parse the 25-char compact IF body format.
+///
+/// This firmware variant prefixes the body with 3 indicator chars (`00X`) before
+/// the 9-digit VFO frequency.  All subsequent field positions remain unchanged.
+fn parse_status_compact(body: &str, _response: &str) -> Psk31Result<CatResponse> {
+    // Frequency: 9 digits at [3..12] (preceded by a 3-char prefix, e.g. "001")
+    let freq_str = &body[3..12];
+    let frequency_hz: u64 = freq_str.parse().map_err(|e| {
+        Psk31Error::Cat(format!("IF: failed to parse frequency '{freq_str}': {e}"))
+    })?;
+
+    // RIT offset: [12..17] — sign char at [12] + 4 decimal digits at [13..17]
+    let rit_offset_hz = parse_rit_offset(&body[12..17]);
+    let rit_enabled = body.as_bytes()[17] == b'1';
+    let is_transmitting = matches!(body.as_bytes()[21], b'1' | b'2');
+
+    // Mode: [19] — single char, no leading '0'
+    let mode_code = &body[19..20];
+    let mode = lookup_mode(mode_code, mode_code);
+
+    let split = body.as_bytes().get(24).map(|&b| b != b'0').unwrap_or(false);
+
+    Ok(CatResponse::Status(RadioStatus {
+        frequency_hz,
+        mode,
+        is_transmitting,
+        rit_offset_hz,
+        rit_enabled,
+        split,
+    }))
+}
+
+/// Look up a mode name from the MODE_TABLE. Falls back to DATA-USB on unknown codes.
+fn lookup_mode(mode_code: &str, mode_code_for_log: &str) -> String {
+    if mode_code.is_empty() {
+        return "DATA-USB".to_string();
+    }
+    MODE_TABLE
+        .iter()
+        .find(|(c, _)| *c == mode_code)
+        .map(|(_, n)| n.to_string())
+        .unwrap_or_else(|| {
+            log::warn!("IF: unknown mode code '{mode_code_for_log}', defaulting to DATA-USB");
+            "DATA-USB".to_string()
+        })
 }
 
 /// Parse a 5-char RIT offset string into signed Hz.
@@ -242,8 +300,18 @@ mod tests {
     }
 
     #[test]
+    fn decode_frequency_9digit() {
+        // FT-991A returns 9-digit responses for HF frequencies
+        assert_eq!(
+            decode("FA007073900;", &GetFrequencyA).unwrap(),
+            CatResponse::FrequencyHz(7_073_900)
+        );
+    }
+
+    #[test]
     fn decode_frequency_too_short() {
-        assert!(decode("FA123;", &GetFrequencyA).is_err());
+        // "FA;" with nothing after the prefix is invalid
+        assert!(decode("FA;", &GetFrequencyA).is_err());
     }
 
     // --- SetFrequencyA ---
@@ -471,6 +539,40 @@ mod tests {
             _ => panic!("expected Status"),
         };
         assert!(s.split);
+    }
+
+    #[test]
+    fn decode_if_compact_25char() {
+        // Actual response observed from FT-991A firmware (compact format, no blank padding).
+        // Body: 001007073900+000000C00000 (25 chars)
+        // Layout: prefix(3)="001" + freq(9)="007073900" + RIT(5)="+0000" +
+        //         RIT_on(1)="0" + XIT_on(1)="0" + mode(1)="C" + indicator(1)="0" +
+        //         TX(1)="0" + tail(3)="000"
+        let response = "IF001007073900+000000C00000;";
+        let s = match decode(response, &GetStatus).unwrap() {
+            CatResponse::Status(s) => s,
+            _ => panic!("expected Status"),
+        };
+        assert_eq!(s.frequency_hz, 7_073_900); // 9-digit freq at body[3..12]
+        assert_eq!(s.mode, "DATA-USB");
+        assert!(!s.is_transmitting);
+        assert!(!s.rit_enabled);
+        assert_eq!(s.rit_offset_hz, 0);
+        assert!(!s.split);
+    }
+
+    #[test]
+    fn decode_if_compact_80m_data_lsb() {
+        // Observed from FT-991A on 80m: IF001003579300+000000800000;
+        // freq(9)="003579300" = 3_579_300 Hz, mode "8" = DATA-LSB
+        let response = "IF001003579300+000000800000;";
+        let s = match decode(response, &GetStatus).unwrap() {
+            CatResponse::Status(s) => s,
+            _ => panic!("expected Status"),
+        };
+        assert_eq!(s.frequency_hz, 3_579_300);
+        assert_eq!(s.mode, "DATA-LSB");
+        assert!(!s.is_transmitting);
     }
 
     #[test]

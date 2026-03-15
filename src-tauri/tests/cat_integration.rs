@@ -183,13 +183,15 @@ fn radio_commands_fail_when_not_connected() {
     assert!(result.is_err());
 }
 
-/// Selecting 40m band sends the ARRL PSK-31 calling frequency wire string.
+/// Selecting 40m band sends BS03; (band select) then FA; in 9-digit format.
 #[test]
 fn band_change_40m_sends_psk31_calling_frequency() {
     let (mut radio, log) = make_ft991a(";");
     // This matches BAND_PLAN[40m].psk31Hz in serial-panel.ts
     radio.set_frequency(Frequency::hz(7_035_000.0)).unwrap();
-    assert_eq!(log.lock().unwrap()[0], "FA00007035000;");
+    let cmds = log.lock().unwrap();
+    assert_eq!(cmds[0], "BS03;");
+    assert_eq!(cmds[1], "FA007035000;");
 }
 
 // ---------------------------------------------------------------------------

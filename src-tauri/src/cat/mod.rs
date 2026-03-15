@@ -58,6 +58,9 @@ pub enum CatCommand {
     GetSignalStrength,
     // Comprehensive status (IF; command)
     GetStatus,
+    /// Select band group (BS; command).  Code 0–10=HF/6m, 12=2m, 13=70cm.
+    /// The FT-991A executes BS; silently — no ack is returned.
+    BandSelect(u8),
 }
 
 /// Parsed responses from the FT-991A.

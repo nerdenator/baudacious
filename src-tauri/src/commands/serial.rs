@@ -3,7 +3,7 @@
 use crate::adapters::ft991a::Ft991aRadio;
 use crate::adapters::mock_radio::MockRadio;
 use crate::adapters::serial_port::SerialPortFactory;
-use crate::domain::{RadioInfo, SerialPortInfo};
+use crate::domain::{data_mode_for_frequency, RadioInfo, SerialPortInfo};
 use crate::ports::{RadioControl, SerialFactory};
 use crate::state::AppState;
 use tauri::State;
@@ -37,11 +37,27 @@ pub fn connect_serial(
         (Box::new(Ft991aRadio::new(connection)), port.clone())
     };
 
-    // Auto-detect: one IF; query gives us freq + mode (+ RIT/split state) in a
-    // single serial round-trip instead of the two separate FA; + MD0; calls.
-    let status = radio.get_status().map_err(|e| e.to_string())?;
-    let frequency_hz = status.frequency_hz as f64;
-    let mode = status.mode;
+    // Auto-detect current state with separate FA; and MD0; queries.
+    // Using FA; + MD0; avoids the firmware-variant ambiguity in IF; response parsing,
+    // and FA; has no amateur-band restriction on read (unlike set_frequency).
+    let frequency_hz = radio.get_frequency().map_err(|e| e.to_string())?.as_hz();
+    let current_mode = radio.get_mode().map_err(|e| e.to_string())?;
+
+    // Ensure the radio is in the correct DATA mode for this frequency.
+    // BS; (used by set_frequency) recalls the band's stored mode, which may be a phone
+    // mode (e.g. LSB) rather than DATA-LSB. Correct it here at connect time.
+    let required_mode = data_mode_for_frequency(frequency_hz);
+    let mode = if current_mode != required_mode {
+        log::info!("connect: correcting mode {current_mode} → {required_mode} for {frequency_hz} Hz");
+        if let Err(e) = radio.set_mode(required_mode) {
+            log::warn!("connect: set_mode failed (continuing with current mode): {e}");
+            current_mode
+        } else {
+            required_mode.to_string()
+        }
+    } else {
+        current_mode
+    };
 
     let info = RadioInfo {
         port: display_port.clone(),

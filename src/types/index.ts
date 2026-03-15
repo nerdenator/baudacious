@@ -35,6 +35,15 @@ export interface RadioInfo {
   connected: boolean;
 }
 
+export interface RadioStatus {
+  frequencyHz: number;
+  mode: string;
+  isTransmitting: boolean;
+  ritOffsetHz: number;
+  ritEnabled: boolean;
+  split: boolean;
+}
+
 export interface MenuEvent {
   id: string;
 }

@@ -12,7 +12,7 @@ pub fn encode(cmd: &CatCommand) -> String {
     use CatCommand::*;
     match cmd {
         GetFrequencyA => "FA;".into(),
-        SetFrequencyA(hz) => format!("FA{hz:011};"),
+        SetFrequencyA(hz) => format!("FA{hz:09};"),
         GetMode => "MD0;".into(),
         SetMode(name) => {
             let code = MODE_TABLE
@@ -31,6 +31,7 @@ pub fn encode(cmd: &CatCommand) -> String {
         SetTxPower(w) => format!("PC{w:03};"),
         GetSignalStrength => "SM0;".into(),
         GetStatus => "IF;".into(),
+        BandSelect(code) => format!("BS{code:02};"),
     }
 }
 
@@ -46,17 +47,18 @@ mod tests {
 
     #[test]
     fn encode_set_frequency_20m() {
-        assert_eq!(encode(&SetFrequencyA(14_070_000)), "FA00014070000;");
+        // FT-991A uses 9-digit format for frequency
+        assert_eq!(encode(&SetFrequencyA(14_070_000)), "FA014070000;");
     }
 
     #[test]
     fn encode_set_frequency_40m() {
-        assert_eq!(encode(&SetFrequencyA(7_035_000)), "FA00007035000;");
+        assert_eq!(encode(&SetFrequencyA(7_035_000)), "FA007035000;");
     }
 
     #[test]
     fn encode_set_frequency_zero_padded() {
-        assert_eq!(encode(&SetFrequencyA(1_800_000)), "FA00001800000;");
+        assert_eq!(encode(&SetFrequencyA(1_800_000)), "FA001800000;");
     }
 
     #[test]
@@ -124,6 +126,7 @@ mod tests {
     fn encode_get_status() {
         assert_eq!(encode(&GetStatus), "IF;");
     }
+
 
     #[test]
     fn encode_all_modes_roundtrip() {

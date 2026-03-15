@@ -2,7 +2,7 @@
  *  and manages the band selector + per-band frequency input.
  */
 
-import { listSerialPorts, connectSerial, disconnectSerial, setFrequency } from '../services/backend-api';
+import { listSerialPorts, connectSerial, disconnectSerial, setFrequency, setMode, getRadioState } from '../services/backend-api';
 import { setSerialState } from '../services/app-state';
 
 /** Default baud rate for FT-991A */
@@ -30,6 +30,14 @@ const BAND_PLAN: readonly BandEntry[] = [
   { name: '10m',  minHz: 28_000_000, maxHz: 29_700_000, psk31Hz: 28_120_000 },
 ];
 
+/** Return the correct DATA mode for a frequency.
+ *  Mirrors data_mode_for_frequency() in domain/frequency.rs:
+ *  60m is always DATA-USB; below 10 MHz is DATA-LSB; 10 MHz+ is DATA-USB. */
+function dataModeForHz(hz: number): string {
+  if (hz >= 5_332_000 && hz <= 5_405_000) return 'DATA-USB'; // 60m exception
+  return hz < 10_000_000 ? 'DATA-LSB' : 'DATA-USB';
+}
+
 let _resetUi: (() => void) | null = null;
 
 /** Reset the serial panel to disconnected state (e.g. on backend-initiated disconnect) */
@@ -51,6 +59,9 @@ export function setupSerialPanel(): void {
 
   let connected = false;
   let flashTimeout: number | null = null;
+  let pollInterval: number | null = null;
+  let lastUserActionAt = 0;
+  const USER_ACTION_SUPPRESS_MS = 4_000;
   let connectionId = 0;
   let activeBand: BandEntry | null = null;
 
@@ -65,26 +76,59 @@ export function setupSerialPanel(): void {
   // Populate serial dropdown from backend on load
   populateDropdown(dropdown);
 
-  // Band select change: jump to PSK-31 calling freq for that band
+  // Band select change: jump to PSK-31 calling freq and set correct DATA mode
   bandSelect.addEventListener('change', () => {
     if (!connected) return;
+    lastUserActionAt = Date.now();
     const band = BAND_PLAN.find(b => b.name === bandSelect.value) ?? null;
     if (!band) return;
     activeBand = band;
     applyBandToInput(band, freqInput, rangeHint);
+    const mode = dataModeForHz(band.psk31Hz);
+    if (freqMode) freqMode.textContent = mode;
     setFrequency(band.psk31Hz).catch(err => console.error('set_frequency failed:', err));
+    setMode(mode).catch(err => console.error('set_mode failed:', err));
   });
 
   // Freq input commit: clamp to band range + send on blur or Enter
   function commitFreq(): void {
     if (!connected) return;
+    lastUserActionAt = Date.now();
     let mhz = parseFloat(freqInput.value);
     if (isNaN(mhz)) return;
     if (activeBand) {
       mhz = Math.max(activeBand.minHz / 1e6, Math.min(activeBand.maxHz / 1e6, mhz));
       freqInput.value = mhz.toFixed(3);
     }
-    setFrequency(Math.round(mhz * 1e6)).catch(err => console.error('set_frequency failed:', err));
+    const hz = Math.round(mhz * 1e6);
+    const mode = dataModeForHz(hz);
+    if (freqMode) freqMode.textContent = mode;
+    setFrequency(hz).catch(err => console.error('set_frequency failed:', err));
+    setMode(mode).catch(err => console.error('set_mode failed:', err));
+  }
+
+  // Poll radio state every 2s while connected to reflect knob/button changes on the rig.
+  // Suppressed for USER_ACTION_SUPPRESS_MS after any user-initiated change so the app
+  // doesn't overwrite UI state before the radio has processed the command.
+  function syncRadioState(): void {
+    if (Date.now() - lastUserActionAt < USER_ACTION_SUPPRESS_MS) return;
+    getRadioState().then(status => {
+      if (!connected) return;
+      if (Date.now() - lastUserActionAt < USER_ACTION_SUPPRESS_MS) return;
+      const hz = status.frequencyHz;
+      const band = detectBand(hz);
+      activeBand = band;
+      if (band) {
+        bandSelect.value = band.name;
+        freqInput.min = (band.minHz / 1e6).toFixed(3);
+        freqInput.max = (band.maxHz / 1e6).toFixed(3);
+        if (rangeHint) rangeHint.textContent = `(${(band.minHz / 1e6).toFixed(3)}–${(band.maxHz / 1e6).toFixed(3)})`;
+      } else {
+        bandSelect.value = '';
+      }
+      freqInput.value = (hz / 1e6).toFixed(3);
+      if (freqMode) freqMode.textContent = status.mode;
+    }).catch(() => { /* radio may be briefly busy */ });
   }
 
   freqInput.addEventListener('blur', commitFreq);
@@ -156,6 +200,10 @@ export function setupSerialPanel(): void {
       connectBtn.classList.add('connected');
       dropdown.disabled = true;
 
+      // Start polling radio state every 2s to track knob/VFO changes on the rig
+      if (pollInterval) clearInterval(pollInterval);
+      pollInterval = window.setInterval(syncRadioState, 2_000);
+
       if (flashTimeout) clearTimeout(flashTimeout);
       flashTimeout = window.setTimeout(() => {
         if (thisConnection === connectionId) {
@@ -191,6 +239,10 @@ export function setupSerialPanel(): void {
     if (flashTimeout) {
       clearTimeout(flashTimeout);
       flashTimeout = null;
+    }
+    if (pollInterval) {
+      clearInterval(pollInterval);
+      pollInterval = null;
     }
     connectBtn.disabled = false;
     connectBtn.textContent = 'Connect';

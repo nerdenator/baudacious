@@ -45,7 +45,7 @@ export async function setupStatusBar(): Promise<void> {
             // Radio may have disconnected between the serial-state event and this tick;
             // the interval will be cleared when the disconnect event arrives.
           }
-        }, 500);
+        }, 2000);
       }
     } else {
       if (smeterInterval !== null) {

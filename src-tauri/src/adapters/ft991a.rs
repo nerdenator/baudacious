@@ -2,7 +2,7 @@
 //!
 //! The FT-991A speaks a simple text protocol over serial:
 //! - Send a command like `FA;` (get frequency)
-//! - Radio replies like `FA00014070000;` (frequency in Hz, zero-padded to 11 digits)
+//! - Radio replies like `FA014070000;` (frequency in Hz, 9-digit zero-padded)
 //! - All commands/responses are terminated with `;`
 //!
 //! This adapter translates high-level RadioControl calls into CatCommands,
@@ -35,6 +35,29 @@ const AMATEUR_BANDS_HZ: &[(u64, u64)] = &[
 /// Check if a frequency falls within a US amateur band.
 fn is_amateur_frequency(hz: u64) -> bool {
     AMATEUR_BANDS_HZ.iter().any(|&(lo, hi)| hz >= lo && hz <= hi)
+}
+
+/// Map a frequency to the FT-991A BS; band-select code.
+///
+/// Codes: 0=160m, 1=80m, 2=60m, 3=40m, 4=30m, 5=20m, 6=17m, 7=15m, 8=12m,
+///        9=10m, 10=6m, 12=2m, 13=70cm.
+fn band_select_code(hz: u64) -> u8 {
+    match hz {
+        1_800_000..=2_000_000 => 0,
+        3_500_000..=4_000_000 => 1,
+        5_332_000..=5_405_000 => 2,
+        7_000_000..=7_300_000 => 3,
+        10_100_000..=10_150_000 => 4,
+        14_000_000..=14_350_000 => 5,
+        18_068_000..=18_168_000 => 6,
+        21_000_000..=21_450_000 => 7,
+        24_890_000..=24_990_000 => 8,
+        28_000_000..=29_700_000 => 9,
+        50_000_000..=54_000_000 => 10,
+        144_000_000..=148_000_000 => 12,
+        420_000_000..=450_000_000 => 13,
+        _ => 5,
+    }
 }
 
 /// FT-991A radio adapter. Owns a CatSession and tracks TX state.
@@ -72,11 +95,9 @@ impl RadioControl for Ft991aRadio {
     fn get_frequency(&mut self) -> Psk31Result<Frequency> {
         match self.session.execute(&CatCommand::GetFrequencyA)? {
             CatResponse::FrequencyHz(hz) => {
-                if !is_amateur_frequency(hz) {
-                    return Err(Psk31Error::Cat(format!(
-                        "Frequency {hz} Hz is outside US amateur bands"
-                    )));
-                }
+                // No band validation here — reading the radio's current frequency
+                // should always succeed (radio might be on a non-amateur freq).
+                // Validation only applies in set_frequency.
                 Ok(Frequency::hz(hz as f64))
             }
             _ => Err(Psk31Error::Cat(
@@ -92,7 +113,10 @@ impl RadioControl for Ft991aRadio {
                 "Frequency {hz} Hz is outside US amateur bands"
             )));
         }
-        self.session.execute(&CatCommand::SetFrequencyA(hz))?;
+        // The FT-991A uses per-band VFO stacks. BS; switches the active stack
+        // so FA; lands in the right band. Both commands execute silently — no ack.
+        self.session.execute_write_only(&CatCommand::BandSelect(band_select_code(hz)))?;
+        self.session.execute_write_only(&CatCommand::SetFrequencyA(hz))?;
         Ok(())
     }
 
@@ -104,7 +128,7 @@ impl RadioControl for Ft991aRadio {
     }
 
     fn set_mode(&mut self, mode: &str) -> Psk31Result<()> {
-        self.session.execute(&CatCommand::SetMode(mode.to_string()))?;
+        self.session.execute_write_only(&CatCommand::SetMode(mode.to_string()))?;
         Ok(())
     }
 
@@ -136,15 +160,7 @@ impl RadioControl for Ft991aRadio {
 
     fn get_status(&mut self) -> Psk31Result<RadioStatus> {
         match self.session.execute(&CatCommand::GetStatus)? {
-            CatResponse::Status(s) => {
-                if !is_amateur_frequency(s.frequency_hz) {
-                    return Err(Psk31Error::Cat(format!(
-                        "Frequency {} Hz is outside US amateur bands",
-                        s.frequency_hz
-                    )));
-                }
-                Ok(s)
-            }
+            CatResponse::Status(s) => Ok(s),
             _ => Err(Psk31Error::Cat(
                 "unexpected response for GetStatus".into(),
             )),
@@ -238,22 +254,36 @@ mod tests {
     }
 
     #[test]
-    fn set_frequency_sends_correct_cat() {
+    fn set_frequency_sends_bs_then_fa() {
+        // Both BS; and FA; are write-only (no ack). Mock response is irrelevant.
         let (mut radio, log) = make_radio(";");
         radio.set_frequency(Frequency::hz(14_070_000.0)).unwrap();
-        assert_eq!(log.lock().unwrap()[0], "FA00014070000;");
+        let cmds = log.lock().unwrap();
+        assert_eq!(cmds[0], "BS05;");
+        assert_eq!(cmds[1], "FA014070000;");
     }
 
     #[test]
-    fn set_frequency_40m_psk31() {
+    fn set_frequency_40m() {
         let (mut radio, log) = make_radio(";");
         radio.set_frequency(Frequency::hz(7_035_000.0)).unwrap();
-        assert_eq!(log.lock().unwrap()[0], "FA00007035000;");
+        let cmds = log.lock().unwrap();
+        assert_eq!(cmds[0], "BS03;");
+        assert_eq!(cmds[1], "FA007035000;");
+    }
+
+    #[test]
+    fn set_frequency_17m() {
+        let (mut radio, log) = make_radio(";");
+        radio.set_frequency(Frequency::hz(18_100_000.0)).unwrap();
+        let cmds = log.lock().unwrap();
+        assert_eq!(cmds[0], "BS06;");
+        assert_eq!(cmds[1], "FA018100000;");
     }
 
     #[test]
     fn get_frequency_sends_fa_query() {
-        let (mut radio, log) = make_radio("FA00014070000;");
+        let (mut radio, log) = make_radio("FA014070000;");
         radio.get_frequency().unwrap();
         assert_eq!(log.lock().unwrap()[0], "FA;");
     }
@@ -287,10 +317,11 @@ mod tests {
     }
 
     #[test]
-    fn get_frequency_rejects_non_amateur_response() {
-        // Radio returns a broadcast frequency — we should reject it
-        let (mut radio, _) = make_radio("FA00001000000;");
-        assert!(radio.get_frequency().is_err());
+    fn get_frequency_returns_non_amateur_response() {
+        // get_frequency is a read — it should succeed even for non-amateur frequencies.
+        // (Band validation only applies to set_frequency.)
+        let (mut radio, _) = make_radio("FA001000000;");
+        assert!(radio.get_frequency().is_ok());
     }
 
     // --- TX power ---
@@ -345,11 +376,12 @@ mod tests {
     }
 
     #[test]
-    fn get_status_rejects_non_amateur_frequency() {
-        // 10 MHz is between 30m and 20m, not an amateur allocation
+    fn get_status_allows_non_amateur_frequency() {
+        // Connect should succeed regardless of current VFO frequency —
+        // band validation only applies to set_frequency, not status reads.
         let response = make_if_body(10_000_000, "C", false, false, 0, false);
         let (mut radio, _) = make_radio(&response);
-        assert!(radio.get_status().is_err());
+        assert!(radio.get_status().is_ok());
     }
 
     #[test]

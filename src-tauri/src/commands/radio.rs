@@ -10,7 +10,7 @@
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::domain::{Frequency, Psk31Error, Psk31Result};
+use crate::domain::{Frequency, Psk31Error, Psk31Result, RadioStatus};
 use crate::ports::RadioControl;
 use crate::state::AppState;
 
@@ -88,4 +88,10 @@ pub fn set_mode(app: AppHandle, state: State<AppState>, mode: String) -> Result<
 #[tauri::command]
 pub fn get_signal_strength(app: AppHandle, state: State<AppState>) -> Result<f32, String> {
     with_radio(&state, &app, |r| r.get_signal_strength())
+}
+
+/// Returns frequency + mode in one IF; round-trip, used for periodic UI sync.
+#[tauri::command]
+pub fn get_radio_state(app: AppHandle, state: State<AppState>) -> Result<RadioStatus, String> {
+    with_radio(&state, &app, |r| r.get_status())
 }

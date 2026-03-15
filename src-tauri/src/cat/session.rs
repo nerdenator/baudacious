@@ -16,11 +16,15 @@ use super::{decode, encode, CatCommand, CatResponse};
 /// Minimum delay between CAT commands (FT-991A firmware requirement)
 const COMMAND_DELAY_MS: u64 = 50;
 
+/// Settling delay after opening a serial port before sending the first command.
+/// Some USB-serial adapters (e.g. CP2105) need a moment to become ready.
+const PORT_SETTLE_MS: u64 = 200;
+
 /// Chunk size for each serial read call
 const READ_CHUNK_SIZE: usize = 64;
 
-/// Max read attempts before giving up (~100ms per attempt → ~500ms total)
-const RESPONSE_TIMEOUT_READS: usize = 5;
+/// Max read attempts before giving up (~100ms per attempt → ~1000ms total)
+const RESPONSE_TIMEOUT_READS: usize = 10;
 
 /// Owns a serial connection and executes CAT commands against the FT-991A.
 pub struct CatSession {
@@ -30,6 +34,8 @@ pub struct CatSession {
 
 impl CatSession {
     pub fn new(serial: Box<dyn SerialConnection>) -> Self {
+        // Give the USB-serial adapter time to settle before the first command.
+        std::thread::sleep(Duration::from_millis(PORT_SETTLE_MS));
         Self {
             serial,
             last_command_time: None,
@@ -65,6 +71,27 @@ impl CatSession {
         decode(raw, cmd)
     }
 
+    /// Write a command and do NOT wait for a response.
+    ///
+    /// Used for FT-991A commands that execute silently without sending an ack:
+    /// - `BS;` (band select) — changes band stack, no `;` returned
+    /// - `FA;` (set frequency) — on some firmware variants, no `;` returned
+    ///
+    /// Returns an error only if the serial write itself fails.
+    pub fn execute_write_only(&mut self, cmd: &CatCommand) -> Psk31Result<()> {
+        self.ensure_command_delay();
+
+        let wire = encode(cmd);
+        log::debug!("CAT TX: {wire}");
+
+        self.serial
+            .write(wire.as_bytes())
+            .map_err(|e| Psk31Error::Cat(format!("Command '{wire}' write failed: {e}")))?;
+
+        self.last_command_time = Some(Instant::now());
+        Ok(())
+    }
+
     /// Read bytes from the serial port until a `;` appears or timeout.
     ///
     /// Each serial.read() has a 100ms hardware timeout. We retry up to
@@ -83,13 +110,10 @@ impl CatSession {
                     }
                 }
                 Ok(_) => {} // Zero bytes: read timed out, try again
-                Err(e) => {
-                    // Timeout mid-response is fine; only propagate if nothing received yet
-                    if buf.is_empty() {
-                        return Err(Psk31Error::Cat(format!(
-                            "Command '{cmd_wire}' read failed: {e}"
-                        )));
-                    }
+                Err(_) => {
+                    // Timeout or transient error: keep retrying.
+                    // If the radio never responds, the "no response" check below fires
+                    // after all attempts are exhausted.
                 }
             }
         }
