@@ -617,6 +617,27 @@ html, body {
   cursor: not-allowed;
 }
 
+.tx-btn-tune {
+  background: transparent;
+  color: #d97706;
+  border: 1px solid #92400e;
+}
+
+.tx-btn-tune:hover {
+  background: rgba(217, 119, 6, 0.12);
+}
+
+.tx-btn-tune.active {
+  background: #92400e;
+  color: #fef3c7;
+  border-color: #d97706;
+}
+
+.tx-btn-tune:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 /* ============================================
    SIDEBAR CONTROLS
    ============================================ */

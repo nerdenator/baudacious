@@ -20,7 +20,7 @@ jobs:
             args: --target aarch64-apple-darwin
 
           # macOS Intel
-          - platform: macos-15-intel
+          - platform: macos-13
             args: --target x86_64-apple-darwin
 
           # Linux x86_64 (.deb + .AppImage)
@@ -91,5 +91,5 @@ jobs:
             - **Windows**: App is unsigned — click "More info" → "Run anyway" in SmartScreen.
             - **Linux**: Make AppImage executable: `chmod +x *.AppImage`
           releaseDraft: true
-          prerelease: false
+          prerelease: true
           args: ${{ matrix.args }}

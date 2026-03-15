@@ -17,10 +17,14 @@ const SAMPLE_RATE = 48000;
 export class WaterfallDisplay {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
-  private imageData: ImageData | null = null;
+  private imageData: ImageData | null = null;  // single-row ImageData for the top line
   private allColorMaps = buildAllColorMaps();
   private colorMap: Uint8ClampedArray[];
   private resizeHandler = () => this.resize();
+
+  // RAF batching: queue incoming rows, drain once per animation frame
+  private pendingRows: number[][] = [];
+  private rafId: number | null = null;
 
   // Adjustable settings
   private palette: ColorPalette = 'classic';
@@ -41,12 +45,11 @@ export class WaterfallDisplay {
     const rect = this.canvas.parentElement!.getBoundingClientRect();
     this.canvas.width = rect.width;
     this.canvas.height = rect.height;
-    this.imageData = this.ctx.createImageData(this.canvas.width, this.canvas.height);
-    // Fill with black
-    for (let i = 3; i < this.imageData.data.length; i += 4) {
-      this.imageData.data[i] = 255;
-    }
-    this.ctx.putImageData(this.imageData, 0, 0);
+    // Single-row ImageData — we paint one row then use drawImage to scroll
+    this.imageData = this.ctx.createImageData(this.canvas.width, 1);
+    // Fill canvas black
+    this.ctx.fillStyle = '#000';
+    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
   }
 
   start(): void {
@@ -99,60 +102,56 @@ export class WaterfallDisplay {
     return { startHz, endHz: startHz + span };
   }
 
-  private scrollDown(): void {
-    if (!this.imageData) return;
-    const { width, height } = this.canvas;
-    const data = this.imageData.data;
-    for (let y = height - 1; y > 0; y--) {
-      for (let x = 0; x < width; x++) {
-        const srcIdx = ((y - 1) * width + x) * 4;
-        const dstIdx = (y * width + x) * 4;
-        data[dstIdx] = data[srcIdx];
-        data[dstIdx + 1] = data[srcIdx + 1];
-        data[dstIdx + 2] = data[srcIdx + 2];
-      }
+  /**
+   * Queue a spectrum row for rendering. Schedules a single RAF callback to
+   * drain the queue — multiple events arriving in the same frame are collapsed
+   * into one paint, preventing main-thread jank from event bursts.
+   */
+  drawSpectrum(magnitudes: number[]): void {
+    this.pendingRows.push(magnitudes);
+    if (this.rafId === null) {
+      this.rafId = requestAnimationFrame(() => this.flushPendingRows());
     }
   }
 
-  /**
-   * Draw a single spectrum line from real FFT magnitudes (in dB).
-   * Called by the audio bridge when an fft-data event arrives.
-   */
-  drawSpectrum(magnitudes: number[]): void {
-    if (!this.imageData) return;
+  private flushPendingRows(): void {
+    this.rafId = null;
+    if (!this.imageData || this.pendingRows.length === 0) return;
 
-    this.scrollDown();
+    const rows = this.pendingRows;
+    this.pendingRows = [];
 
-    // Map FFT bins to the visible Hz range (zoom + carrier aware)
     const { width } = this.canvas;
-    const data = this.imageData.data;
-    const fftSize = magnitudes.length * 2;
+    const fftSize = rows[0].length * 2;
     const binWidth = SAMPLE_RATE / fftSize;
     const { startHz, endHz } = this.getVisibleRange();
     const startBin = Math.floor(startHz / binWidth);
-    const endBin = Math.ceil(endHz / binWidth);
-    const displayBins = endBin - startBin;
+    const displayBins = Math.ceil(endHz / binWidth) - startBin;
+    const data = this.imageData.data;
 
-    // Draw the new top row
-    for (let x = 0; x < width; x++) {
-      const binFloat = startBin + (x / width) * displayBins;
-      const binIdx = Math.floor(binFloat);
-      const dbValue = binIdx < magnitudes.length ? magnitudes[binIdx] : this.noiseFloor;
+    for (const magnitudes of rows) {
+      // Scroll existing content down by 1px using GPU-accelerated drawImage
+      this.ctx.drawImage(this.canvas, 0, 1);
 
-      // Normalize dB to 0-255 using adjustable noise floor
-      const normalized = Math.min(
-        255,
-        Math.max(0, Math.floor(((dbValue - this.noiseFloor) / this.dynamicRange) * 255)),
-      );
-      const color = this.colorMap[normalized];
+      // Paint the new row into the single-row ImageData
+      for (let x = 0; x < width; x++) {
+        const binIdx = Math.floor(startBin + (x / width) * displayBins);
+        const db = binIdx < magnitudes.length ? magnitudes[binIdx] : this.noiseFloor;
+        const normalized = Math.min(
+          255,
+          Math.max(0, Math.floor(((db - this.noiseFloor) / this.dynamicRange) * 255)),
+        );
+        const color = this.colorMap[normalized];
+        const idx = x * 4;
+        data[idx]     = color[0];
+        data[idx + 1] = color[1];
+        data[idx + 2] = color[2];
+        data[idx + 3] = 255;
+      }
 
-      const idx = x * 4;
-      data[idx] = color[0];
-      data[idx + 1] = color[1];
-      data[idx + 2] = color[2];
+      // Write only the top row (dirty-rect putImageData)
+      this.ctx.putImageData(this.imageData, 0, 0);
     }
-
-    this.ctx.putImageData(this.imageData, 0, 0);
   }
 
 }

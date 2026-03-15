@@ -1,12 +1,13 @@
 /** TX control buttons (Send/Abort) — wired to the real PSK-31 TX backend */
 
-import { startTx, stopTx } from '../services/backend-api';
+import { startTx, stopTx, startTune, stopTune } from '../services/backend-api';
 import { listenTxStatus } from '../services/tx-bridge';
 import { onSerialChanged } from '../services/app-state';
 
 export function setupTxButtons(): void {
   const sendBtn = document.querySelector('.tx-btn-send') as HTMLButtonElement;
   const abortBtn = document.querySelector('.tx-btn-abort') as HTMLButtonElement;
+  const tuneBtn = document.getElementById('tune-btn') as HTMLButtonElement;
   const txIndicator = document.querySelector('.tx-indicator') as HTMLElement;
   const pttIndicator = document.querySelector('.ptt-indicator') as HTMLElement;
   const pttStatus = document.querySelector('.ptt-status') as HTMLElement;
@@ -15,9 +16,12 @@ export function setupTxButtons(): void {
   if (!sendBtn || !abortBtn) return;
 
   let serialConnected = false;
+  let tuning = false;
+
   onSerialChanged((connected) => {
     serialConnected = connected;
     sendBtn.disabled = !connected;
+    if (tuneBtn) tuneBtn.disabled = !connected;
   });
 
   sendBtn.addEventListener('click', async () => {
@@ -54,21 +58,42 @@ export function setupTxButtons(): void {
     setTxState(false);
   });
 
+  tuneBtn?.addEventListener('click', async () => {
+    if (tuning) {
+      try {
+        await stopTune();
+      } catch (err) {
+        console.error('Tune stop failed:', err);
+      }
+      setTuneState(false);
+    } else {
+      const outputDropdown = document.getElementById('audio-output') as HTMLSelectElement;
+      const deviceId = outputDropdown?.value;
+      if (!deviceId) {
+        console.error('No audio output device selected');
+        return;
+      }
+      setTuneState(true);
+      try {
+        await startTune(deviceId);
+      } catch (err) {
+        console.error('Tune start failed:', err);
+        setTuneState(false);
+      }
+    }
+  });
+
   // Listen for TX status events from the backend
   listenTxStatus({
     onTransmitting: (_progress) => {
       // Could update a progress bar here in future
     },
-    onComplete: async () => {
-      try {
-        await stopTx(); // releases PTT
-      } catch (err) {
-        console.error('PTT off failed:', err);
-      }
+    onComplete: () => {
+      // Thread self-clears its handle and PTT — no follow-up invoke needed.
       setTxState(false);
     },
     onAborted: () => {
-      setTxState(false);
+      if (tuning) setTuneState(false); else setTxState(false);
     },
     onError: async (msg) => {
       console.error('TX error:', msg);
@@ -91,12 +116,37 @@ export function setupTxButtons(): void {
       sendBtn.disabled = true;
       abortBtn.disabled = false;
       txInput.disabled = true;
+      if (tuneBtn) tuneBtn.disabled = true;
     } else {
       txIndicator?.classList.remove('active');
       pttIndicator?.classList.remove('tx');
       pttIndicator?.classList.add('rx');
       if (pttIndicator) pttIndicator.textContent = 'RX';
       if (pttStatus) pttStatus.textContent = 'Receiving';
+      sendBtn.disabled = !serialConnected;
+      abortBtn.disabled = true;
+      txInput.disabled = false;
+      if (tuneBtn) tuneBtn.disabled = !serialConnected;
+    }
+  }
+
+  function setTuneState(active: boolean): void {
+    tuning = active;
+    if (active) {
+      pttIndicator?.classList.remove('rx');
+      pttIndicator?.classList.add('tx');
+      if (pttIndicator) pttIndicator.textContent = 'TX';
+      if (pttStatus) pttStatus.textContent = 'Tuning';
+      if (tuneBtn) { tuneBtn.textContent = 'Stop Tune'; tuneBtn.classList.add('active'); }
+      sendBtn.disabled = true;
+      abortBtn.disabled = true;
+      txInput.disabled = true;
+    } else {
+      pttIndicator?.classList.remove('tx');
+      pttIndicator?.classList.add('rx');
+      if (pttIndicator) pttIndicator.textContent = 'RX';
+      if (pttStatus) pttStatus.textContent = 'Receiving';
+      if (tuneBtn) { tuneBtn.textContent = 'Tune'; tuneBtn.classList.remove('active'); tuneBtn.disabled = !serialConnected; }
       sendBtn.disabled = !serialConnected;
       abortBtn.disabled = true;
       txInput.disabled = false;

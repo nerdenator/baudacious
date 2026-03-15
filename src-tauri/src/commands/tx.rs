@@ -146,6 +146,150 @@ pub fn stop_tx(state: tauri::State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+pub fn start_tune(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    device_id: String,
+) -> Result<(), String> {
+    if state.tx_thread.lock().unwrap().is_some() {
+        return Err("Already transmitting".into());
+    }
+
+    let carrier_freq = state.config.lock().unwrap().carrier_freq;
+    let sample_rate = state.config.lock().unwrap().sample_rate;
+
+    let abort = state.tx_abort.clone();
+    abort.store(false, Ordering::SeqCst);
+
+    // Tune always uses 10W regardless of the configured TX power setting
+    let _ = with_radio(&state, &app, |radio| {
+        ensure_data_mode(radio.as_mut());
+        if let Err(e) = radio.set_tx_power(10) {
+            log::warn!("TX power set failed (continuing): {e}");
+        }
+        Ok(())
+    });
+
+    let handle = thread::spawn(move || {
+        run_tune_thread(app, abort, device_id, carrier_freq, f64::from(sample_rate));
+    });
+
+    state.tx_thread.lock().unwrap().replace(handle);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn stop_tune(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.tx_abort.store(true, Ordering::SeqCst);
+
+    if let Some(handle) = state.tx_thread.lock().unwrap().take() {
+        handle.join().map_err(|_| "Tune thread panicked".to_string())?;
+    }
+
+    // Restore the configured TX power now that tune is done
+    let configured_watts = state.config.lock().unwrap().tx_power_watts;
+    if let Ok(mut guard) = state.radio.lock() {
+        if let Some(radio) = guard.as_mut() {
+            if let Err(e) = radio.ptt_off() {
+                log::warn!("PTT OFF failed: {e}");
+            }
+            if let Err(e) = radio.set_tx_power(configured_watts) {
+                log::warn!("TX power restore failed: {e}");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Tune thread: transmits a continuous sine wave at the carrier frequency until aborted.
+fn run_tune_thread(
+    app: AppHandle,
+    abort: Arc<std::sync::atomic::AtomicBool>,
+    device_id: String,
+    carrier_freq: f64,
+    sample_rate: f64,
+) {
+    let radio_state = app.state::<AppState>();
+
+    // PTT ON
+    if let Ok(mut guard) = radio_state.radio.lock() {
+        if let Some(radio) = guard.as_mut() {
+            if let Err(e) = radio.ptt_on() {
+                log::warn!("PTT ON failed (continuing without PTT): {e}");
+            }
+        }
+    }
+
+    thread::sleep(Duration::from_millis(50));
+
+    let _ = app.emit(
+        "tx-status",
+        TxStatusPayload {
+            status: "tuning".into(),
+            progress: 0.0,
+        },
+    );
+
+    let phase_inc = 2.0 * std::f64::consts::PI * carrier_freq / sample_rate;
+    let abort_for_cb = abort.clone();
+
+    let mut audio_output = CpalAudioOutput::new();
+    let mut phase: f64 = 0.0;
+
+    let start_result = audio_output.start(
+        &device_id,
+        Box::new(move |output_buf: &mut [f32]| {
+            if abort_for_cb.load(Ordering::SeqCst) {
+                for s in output_buf.iter_mut() {
+                    *s = 0.0;
+                }
+                return;
+            }
+            for s in output_buf.iter_mut() {
+                *s = phase.sin() as f32;
+                phase += phase_inc;
+                if phase > 2.0 * std::f64::consts::PI {
+                    phase -= 2.0 * std::f64::consts::PI;
+                }
+            }
+        }),
+    );
+
+    if let Err(e) = start_result {
+        log::error!("Failed to start audio output for tune: {e}");
+        if let Ok(mut guard) = radio_state.radio.lock() {
+            if let Some(radio) = guard.as_mut() {
+                let _ = radio.ptt_off();
+            }
+        }
+        return;
+    }
+
+    loop {
+        if abort.load(Ordering::SeqCst) {
+            let _ = audio_output.stop();
+            if let Ok(mut guard) = radio_state.radio.lock() {
+                if let Some(radio) = guard.as_mut() {
+                    if let Err(e) = radio.ptt_off() {
+                        log::warn!("PTT OFF failed: {e}");
+                    }
+                }
+            }
+            let _ = app.emit(
+                "tx-status",
+                TxStatusPayload {
+                    status: "aborted".into(),
+                    progress: 0.0,
+                },
+            );
+            return;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// TX thread: plays encoded samples through the audio output device.
 fn run_tx_thread(
     app: AppHandle,
@@ -248,19 +392,13 @@ fn run_tx_thread(
         }
 
         if done_flag.load(Ordering::SeqCst) {
-            // Give a small buffer for the audio device to actually play the final samples
-            thread::sleep(Duration::from_millis(100));
+            // Brief wait for the audio device to clock out its current buffer
+            thread::sleep(Duration::from_millis(30));
             let _ = audio_output.stop();
 
-            // PTT OFF — deactivate before emitting complete
-            if let Ok(mut guard) = radio_state.radio.lock() {
-                if let Some(radio) = guard.as_mut() {
-                    if let Err(e) = radio.ptt_off() {
-                        log::warn!("PTT OFF failed: {e}");
-                    }
-                }
-            }
-
+            // Emit complete BEFORE PTT OFF — UI resets with zero IPC latency.
+            // The frontend onComplete handler needs no follow-up invoke() call
+            // because we self-clear the thread handle here with try_lock.
             let _ = app.emit(
                 "tx-status",
                 TxStatusPayload {
@@ -269,20 +407,26 @@ fn run_tx_thread(
                 },
             );
 
+            // Self-clear our handle from AppState so start_tx works immediately.
+            // Use try_lock to avoid deadlock if stop_tx holds the lock concurrently
+            // (in that case stop_tx will clear the handle itself via join).
+            if let Ok(mut guard) = radio_state.tx_thread.try_lock() {
+                let _ = guard.take();
+            }
+
+            // PTT OFF after the emit — audio is already silent, holding key
+            // for ~50–100ms more is harmless for PSK-31.
+            if let Ok(mut guard) = radio_state.radio.lock() {
+                if let Some(radio) = guard.as_mut() {
+                    if let Err(e) = radio.ptt_off() {
+                        log::warn!("PTT OFF failed: {e}");
+                    }
+                }
+            }
+
             return;
         }
 
-        // Emit progress
-        let pos = play_pos.load(Ordering::Relaxed);
-        let progress = pos as f32 / total_samples as f32;
-        let _ = app.emit(
-            "tx-status",
-            TxStatusPayload {
-                status: "transmitting".into(),
-                progress,
-            },
-        );
-
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(5));
     }
 }

@@ -38,6 +38,14 @@ export async function stopTx(): Promise<void> {
   return invoke('stop_tx');
 }
 
+export async function startTune(deviceId: string): Promise<void> {
+  return invoke('start_tune', { deviceId });
+}
+
+export async function stopTune(): Promise<void> {
+  return invoke('stop_tune');
+}
+
 // Serial commands
 export async function listSerialPorts(): Promise<SerialPortInfo[]> {
   return invoke('list_serial_ports');

@@ -70,6 +70,8 @@ pub fn run() {
             // TX commands
             commands::tx::start_tx,
             commands::tx::stop_tx,
+            commands::tx::start_tune,
+            commands::tx::stop_tune,
             // Configuration commands
             commands::config::save_configuration,
             commands::config::load_configuration,
