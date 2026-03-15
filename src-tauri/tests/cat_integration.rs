@@ -268,6 +268,36 @@ fn mode_guard_noop_when_mode_already_correct() {
     // (no set_mode call made — if we did, it would still be DATA-USB)
 }
 
+/// connect_serial corrects phone mode (LSB) to DATA-LSB on 80m at connect time.
+#[test]
+fn connect_corrects_lsb_to_data_lsb_on_80m() {
+    let mut radio = MockRadio::new();
+    radio.set_frequency(Frequency::hz(3_580_000.0)).unwrap();
+    radio.set_mode("LSB").unwrap(); // Band memory recalled LSB (phone mode)
+
+    // Simulate the connect_serial mode-correction logic
+    let hz = radio.get_frequency().unwrap().as_hz();
+    let current = radio.get_mode().unwrap();
+    let required = data_mode_for_frequency(hz);
+    if current != required {
+        radio.set_mode(required).unwrap();
+    }
+
+    assert_eq!(radio.get_mode().unwrap(), "DATA-LSB");
+}
+
+/// connect_serial is a no-op when mode is already correct.
+#[test]
+fn connect_does_not_change_mode_when_already_correct() {
+    let mut radio = MockRadio::new(); // 14.070 MHz / DATA-USB by default
+
+    let hz = radio.get_frequency().unwrap().as_hz();
+    let current = radio.get_mode().unwrap();
+    let required = data_mode_for_frequency(hz);
+    // Should already be correct — no set_mode call needed
+    assert_eq!(current, required, "mode should already be DATA-USB on 20m");
+}
+
 /// PTT state is preserved in AppState across multiple lock acquisitions.
 #[test]
 fn ptt_state_visible_through_appstate() {

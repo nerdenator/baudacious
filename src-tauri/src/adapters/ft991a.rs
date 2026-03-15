@@ -64,6 +64,10 @@ fn band_select_code(hz: u64) -> u8 {
 pub struct Ft991aRadio {
     session: CatSession,
     is_transmitting: bool,
+    /// Band-select code of the last frequency we sent, used to avoid
+    /// redundant BS; commands (which trigger a full band-memory recall
+    /// and reset DSP settings like filter width and noise reduction).
+    last_band_code: Option<u8>,
 }
 
 impl Ft991aRadio {
@@ -71,6 +75,7 @@ impl Ft991aRadio {
         Self {
             session: CatSession::new(serial),
             is_transmitting: false,
+            last_band_code: None,
         }
     }
 }
@@ -113,9 +118,14 @@ impl RadioControl for Ft991aRadio {
                 "Frequency {hz} Hz is outside US amateur bands"
             )));
         }
-        // The FT-991A uses per-band VFO stacks. BS; switches the active stack
-        // so FA; lands in the right band. Both commands execute silently — no ack.
-        self.session.execute_write_only(&CatCommand::BandSelect(band_select_code(hz)))?;
+        let code = band_select_code(hz);
+        // Only send BS; when the band actually changes. BS; triggers a full
+        // band-memory recall on the FT-991A (filters, noise reduction, etc.),
+        // so sending it on every within-band frequency change is disruptive.
+        if self.last_band_code != Some(code) {
+            self.session.execute_write_only(&CatCommand::BandSelect(code))?;
+            self.last_band_code = Some(code);
+        }
         self.session.execute_write_only(&CatCommand::SetFrequencyA(hz))?;
         Ok(())
     }
@@ -261,6 +271,34 @@ mod tests {
         let cmds = log.lock().unwrap();
         assert_eq!(cmds[0], "BS05;");
         assert_eq!(cmds[1], "FA014070000;");
+    }
+
+    #[test]
+    fn set_frequency_same_band_skips_bs() {
+        // Second set_frequency within the same band should only send FA;, not BS;.
+        // BS; triggers a full band-memory recall (filters, NR, etc.) and must be
+        // suppressed when only the frequency changes within the same band.
+        let (mut radio, log) = make_radio(";");
+        radio.set_frequency(Frequency::hz(14_070_000.0)).unwrap(); // 20m → sends BS05 + FA
+        radio.set_frequency(Frequency::hz(14_074_000.0)).unwrap(); // 20m again → FA only
+        let cmds = log.lock().unwrap();
+        assert_eq!(cmds[0], "BS05;");
+        assert_eq!(cmds[1], "FA014070000;");
+        assert_eq!(cmds[2], "FA014074000;"); // no BS; here
+        assert_eq!(cmds.len(), 3);
+    }
+
+    #[test]
+    fn set_frequency_band_change_sends_bs() {
+        // Moving to a different band must still send BS; to switch VFO stack.
+        let (mut radio, log) = make_radio(";");
+        radio.set_frequency(Frequency::hz(14_070_000.0)).unwrap(); // 20m
+        radio.set_frequency(Frequency::hz(7_035_000.0)).unwrap();  // 40m → new BS;
+        let cmds = log.lock().unwrap();
+        assert_eq!(cmds[0], "BS05;"); // 20m
+        assert_eq!(cmds[1], "FA014070000;");
+        assert_eq!(cmds[2], "BS03;"); // 40m
+        assert_eq!(cmds[3], "FA007035000;");
     }
 
     #[test]

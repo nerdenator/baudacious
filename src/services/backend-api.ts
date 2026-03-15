@@ -101,3 +101,11 @@ export async function getConnectionStatus(): Promise<ConnectionStatus> {
 export async function getRadioState(): Promise<RadioStatus> {
   return invoke('get_radio_state');
 }
+
+export async function getTxPower(): Promise<number> {
+  return invoke<number>('get_tx_power');
+}
+
+export async function setTxPowerConfig(watts: number): Promise<void> {
+  return invoke('set_tx_power_config', { watts });
+}

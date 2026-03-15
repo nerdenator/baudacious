@@ -3,9 +3,11 @@
 //! Save/load/list/delete configuration profiles as JSON files
 //! in the platform-appropriate app data directory.
 
+use crate::commands::radio::with_radio;
 use crate::domain::Configuration;
+use crate::state::AppState;
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, State};
 
 /// Get (and create if needed) the configs directory.
 /// Think of this like Python's `os.makedirs(path, exist_ok=True)` — it ensures
@@ -41,14 +43,73 @@ fn sanitize_name(name: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
-#[tauri::command]
-pub fn save_configuration(app: AppHandle, config: Configuration) -> Result<(), String> {
+/// Write a Configuration to disk without re-checking the name (caller is responsible).
+/// Extracted so set_tx_power_config can reuse it without duplicating I/O logic.
+fn write_config_to_disk(app: &AppHandle, config: &Configuration) -> Result<(), String> {
     let name = sanitize_name(&config.name)?;
-    let dir = config_dir(&app)?;
+    let dir = config_dir(app)?;
     let path = dir.join(format!("{name}.json"));
     let json =
-        serde_json::to_string_pretty(&config).map_err(|e| format!("Serialization error: {e}"))?;
+        serde_json::to_string_pretty(config).map_err(|e| format!("Serialization error: {e}"))?;
     std::fs::write(&path, json).map_err(|e| format!("Failed to write config: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn save_configuration(app: AppHandle, config: Configuration) -> Result<(), String> {
+    write_config_to_disk(&app, &config)
+}
+
+/// Validate a TX power value (0–100 W inclusive).
+/// Extracted so it can be tested without a Tauri app handle.
+fn validate_tx_power(watts: u32) -> Result<(), String> {
+    if watts > 100 {
+        return Err(format!("TX power {watts} W exceeds maximum (100 W)"));
+    }
+    Ok(())
+}
+
+/// Update tx_power_watts in the running modem config and persist the current profile.
+///
+/// Updates both the in-memory `AppState.config` (used immediately by `start_tx`)
+/// and the "Default" profile file on disk (so the setting survives restart).
+#[tauri::command]
+pub fn set_tx_power_config(
+    app: AppHandle,
+    watts: u32,
+    state: State<AppState>,
+) -> Result<(), String> {
+    validate_tx_power(watts)?;
+
+    // Update the in-memory modem config so start_tx uses the new value immediately
+    {
+        let mut cfg = state
+            .config
+            .lock()
+            .map_err(|_| "config lock poisoned".to_string())?;
+        cfg.tx_power_watts = watts;
+    }
+
+    // Send CAT command to radio immediately (non-fatal — radio may not be connected)
+    let _ = with_radio(&state, &app, |radio| radio.set_tx_power(watts));
+
+    // Persist: load current profile from disk, patch tx_power_watts, save back.
+    // This is best-effort — if no profile file exists yet, skip silently.
+    let name = "Default";
+    let dir = match config_dir(&app) {
+        Ok(d) => d,
+        Err(e) => return Err(e),
+    };
+    let path = dir.join(format!("{name}.json"));
+    if path.exists() {
+        let json = std::fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to read config '{name}': {e}"))?;
+        let mut profile: Configuration = serde_json::from_str(&json)
+            .map_err(|e| format!("Failed to parse config '{name}': {e}"))?;
+        profile.tx_power_watts = watts;
+        write_config_to_disk(&app, &profile)?;
+    }
+
     Ok(())
 }
 
@@ -123,5 +184,34 @@ mod tests {
         assert!(sanitize_name("config<>").is_err());
         assert!(sanitize_name("config;drop").is_err());
         assert!(sanitize_name("config|pipe").is_err());
+    }
+
+    #[test]
+    fn set_tx_power_config_rejects_over_100w() {
+        assert!(validate_tx_power(101).is_err());
+        let err = validate_tx_power(101).unwrap_err();
+        assert!(err.contains("exceeds maximum"));
+    }
+
+    #[test]
+    fn set_tx_power_config_accepts_0w() {
+        assert!(validate_tx_power(0).is_ok());
+    }
+
+    #[test]
+    fn set_tx_power_config_accepts_boundary_values() {
+        assert!(validate_tx_power(25).is_ok());
+        assert!(validate_tx_power(100).is_ok());
+    }
+
+    #[test]
+    fn modem_config_tx_power_can_be_updated() {
+        use crate::domain::ModemConfig;
+        let mut cfg = ModemConfig::default();
+        assert_eq!(cfg.tx_power_watts, 25); // default
+        cfg.tx_power_watts = 10;
+        assert_eq!(cfg.tx_power_watts, 10);
+        cfg.tx_power_watts = 0;
+        assert_eq!(cfg.tx_power_watts, 0);
     }
 }

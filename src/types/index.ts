@@ -4,7 +4,9 @@ export interface AudioDeviceInfo {
   id: string;
   name: string;
   isInput: boolean;
+  isOutput: boolean;
   isDefault: boolean;
+  outputUnverified: boolean;
 }
 
 export interface SerialPortInfo {

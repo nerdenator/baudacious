@@ -2,10 +2,13 @@
 
 import {
   listAudioDevices,
+  listSerialPorts,
   listConfigurations,
   loadConfiguration,
   deleteConfiguration,
 } from '../services/backend-api';
+import { connectFromConfig } from './serial-panel';
+import { hideStartupRecoveryDialog } from './startup-dialog';
 import type { Configuration, AudioDeviceInfo } from '../types';
 
 export interface SettingsDialogDeps {
@@ -75,7 +78,11 @@ export function setupSettingsDialog(deps: SettingsDialogDeps): void {
 
   // ── Audio panel ───────────────────────────────────────────────────────────
   const audioPanel = el('section', 'settings-panel');
-  audioPanel.appendChild(sectionLabel('Audio Devices'));
+  const audioHeader = sectionLabel('Audio Devices');
+  const audioRefreshBtn = btn('refresh-btn', '↻');
+  audioRefreshBtn.title = 'Refresh audio devices';
+  audioHeader.appendChild(audioRefreshBtn);
+  audioPanel.appendChild(audioHeader);
 
   const audioInputSelect = select('device-select');
   audioInputSelect.appendChild(placeholder('Select device...'));
@@ -84,9 +91,34 @@ export function setupSettingsDialog(deps: SettingsDialogDeps): void {
   audioPanel.append(deviceGroup('Input', audioInputSelect), deviceGroup('Output', audioOutputSelect));
   panelArea.appendChild(audioPanel);
 
+  audioRefreshBtn.addEventListener('click', () => { void populateAudioTab(); });
+
   // ── Radio panel ───────────────────────────────────────────────────────────
   const radioPanel = el('section', 'settings-panel');
   radioPanel.appendChild(sectionLabel('Radio'));
+
+  // Serial port row with refresh button
+  const portLabel = el('div', 'settings-device-header');
+  const portLabelText = document.createElement('span');
+  portLabelText.textContent = 'Serial Port';
+  const portRefreshBtn = btn('refresh-btn', '↻');
+  portRefreshBtn.title = 'Refresh serial ports';
+  portLabel.append(portLabelText, portRefreshBtn);
+
+  const portSelect = select('device-select');
+  portSelect.appendChild(placeholder('Select port...'));
+
+  const portGroup = el('div', 'device-group');
+  portGroup.appendChild(portLabel);
+  portGroup.appendChild(portSelect);
+  radioPanel.appendChild(portGroup);
+
+  // Test Connection button + inline status
+  const testRow = el('div', 'settings-test-row');
+  const testBtn = btn('settings-test-btn', 'Test Connection');
+  const testStatus = el('span', 'settings-test-status');
+  testRow.append(testBtn, testStatus);
+  radioPanel.appendChild(testRow);
 
   const radioTypeSelect = select('device-select');
   for (const rt of ['FT-991A']) {
@@ -100,6 +132,43 @@ export function setupSettingsDialog(deps: SettingsDialogDeps): void {
   }
   radioPanel.appendChild(deviceGroup('Baud Rate', baudSelect));
   panelArea.appendChild(radioPanel);
+
+  // ── Port refresh ──────────────────────────────────────────────────────────
+  async function populatePortSelect(): Promise<void> {
+    const ports = await listSerialPorts().catch(() => []);
+    while (portSelect.options.length > 1) portSelect.remove(1);
+    for (const p of ports) {
+      const label = p.deviceHint ? `${p.name} (${p.deviceHint})` : p.name;
+      portSelect.appendChild(option(p.name, label));
+    }
+    const snap = dialogConfig ?? deps.getCurrentConfig();
+    if (snap?.serial_port) portSelect.value = snap.serial_port;
+  }
+  portRefreshBtn.addEventListener('click', () => { void populatePortSelect(); });
+
+  // ── Test Connection ───────────────────────────────────────────────────────
+  testBtn.addEventListener('click', async () => {
+    const port = portSelect.value;
+    const baud = parseInt(baudSelect.value, 10);
+    if (!port) {
+      testStatus.textContent = 'Select a port first';
+      testStatus.className = 'settings-test-status error';
+      return;
+    }
+    testBtn.disabled = true;
+    testStatus.textContent = 'Connecting\u2026';
+    testStatus.className = 'settings-test-status';
+    try {
+      await connectFromConfig(port, baud);
+      testStatus.textContent = 'Connected \u2713';
+      testStatus.className = 'settings-test-status success';
+    } catch (err) {
+      testStatus.textContent = String(err);
+      testStatus.className = 'settings-test-status error';
+    } finally {
+      testBtn.disabled = false;
+    }
+  });
 
   // ── Footer ────────────────────────────────────────────────────────────────
   const footer = el('div', 'settings-footer');
@@ -129,10 +198,12 @@ export function setupSettingsDialog(deps: SettingsDialogDeps): void {
 
   // ── Open / close ──────────────────────────────────────────────────────────
   function open(tab: Tab = 'general'): void {
+    hideStartupRecoveryDialog();
     prefillFromConfig(deps.getCurrentConfig());
     switchTab(tab);
     void populateGeneralTab();
     void populateAudioTab();
+    void populatePortSelect();
     requestAnimationFrame(() => overlay.classList.add('settings-visible'));
     profileNameInput.focus();
   }
@@ -162,6 +233,7 @@ export function setupSettingsDialog(deps: SettingsDialogDeps): void {
     profileNameInput.value = config.name;
     audioInputSelect.value = config.audio_input ?? '';
     audioOutputSelect.value = config.audio_output ?? '';
+    portSelect.value = config.serial_port ?? '';
     radioTypeSelect.value = config.radio_type;
     baudSelect.value = String(config.baud_rate);
     deleteBtn.disabled = config.name === 'Default';
@@ -228,8 +300,27 @@ export function setupSettingsDialog(deps: SettingsDialogDeps): void {
       const label = device.name + (device.isDefault ? ' (Default)' : '');
       if (device.isInput) {
         audioInputSelect.appendChild(option(device.id, label));
-      } else {
-        audioOutputSelect.appendChild(option(device.id, label));
+      }
+    }
+
+    const confirmed = devices.filter(d => d.isOutput && !d.outputUnverified);
+    const unverified = devices.filter(d => d.isOutput && d.outputUnverified);
+    if (unverified.length > 0) {
+      const confirmedGroup = document.createElement('optgroup');
+      confirmedGroup.label = 'Output Devices';
+      for (const device of confirmed) {
+        confirmedGroup.appendChild(option(device.id, device.name + (device.isDefault ? ' (Default)' : '')));
+      }
+      audioOutputSelect.appendChild(confirmedGroup);
+      const unverifiedGroup = document.createElement('optgroup');
+      unverifiedGroup.label = 'Other Devices';
+      for (const device of unverified) {
+        unverifiedGroup.appendChild(option(device.id, device.name + (device.isDefault ? ' (Default)' : '')));
+      }
+      audioOutputSelect.appendChild(unverifiedGroup);
+    } else {
+      for (const device of confirmed) {
+        audioOutputSelect.appendChild(option(device.id, device.name + (device.isDefault ? ' (Default)' : '')));
       }
     }
 
@@ -259,14 +350,14 @@ export function setupSettingsDialog(deps: SettingsDialogDeps): void {
       name,
       audio_input: audioInputSelect.value || null,
       audio_output: audioOutputSelect.value || null,
-      serial_port: base?.serial_port ?? null,
+      serial_port: portSelect.value || null,
       baud_rate: parseInt(baudSelect.value, 10),
       radio_type: radioTypeSelect.value,
       carrier_freq: base?.carrier_freq ?? 1000.0,
       waterfall_palette: base?.waterfall_palette ?? 'classic',
       waterfall_noise_floor: base?.waterfall_noise_floor ?? -100,
       waterfall_zoom: base?.waterfall_zoom ?? 1,
-      tx_power_watts: base?.tx_power_watts ?? 25,
+      tx_power_watts: base?.tx_power_watts ?? 10,
     };
 
     saveBtn.disabled = true;

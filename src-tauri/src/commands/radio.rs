@@ -95,3 +95,85 @@ pub fn get_signal_strength(app: AppHandle, state: State<AppState>) -> Result<f32
 pub fn get_radio_state(app: AppHandle, state: State<AppState>) -> Result<RadioStatus, String> {
     with_radio(&state, &app, |r| r.get_status())
 }
+
+#[tauri::command]
+pub fn get_tx_power(app: AppHandle, state: State<AppState>) -> Result<u32, String> {
+    with_radio(&state, &app, |r| r.get_tx_power()).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{Frequency, Psk31Result, RadioStatus};
+    use crate::ports::RadioControl;
+
+    /// Minimal mock radio whose tx_power field can be set for testing.
+    struct MockRadio {
+        tx_power: u32,
+    }
+
+    impl RadioControl for MockRadio {
+        fn ptt_on(&mut self) -> Psk31Result<()> { Ok(()) }
+        fn ptt_off(&mut self) -> Psk31Result<()> { Ok(()) }
+        fn is_transmitting(&self) -> bool { false }
+        fn get_frequency(&mut self) -> Psk31Result<Frequency> { Ok(Frequency::hz(14_070_000.0)) }
+        fn set_frequency(&mut self, _freq: Frequency) -> Psk31Result<()> { Ok(()) }
+        fn get_mode(&mut self) -> Psk31Result<String> { Ok("DATA-USB".to_string()) }
+        fn set_mode(&mut self, _mode: &str) -> Psk31Result<()> { Ok(()) }
+        fn get_tx_power(&mut self) -> Psk31Result<u32> { Ok(self.tx_power) }
+        fn set_tx_power(&mut self, watts: u32) -> Psk31Result<()> {
+            self.tx_power = watts;
+            Ok(())
+        }
+        fn get_signal_strength(&mut self) -> Psk31Result<f32> { Ok(0.0) }
+        fn get_status(&mut self) -> Psk31Result<RadioStatus> {
+            Ok(RadioStatus {
+                frequency_hz: 14_070_000,
+                mode: "DATA-USB".to_string(),
+                is_transmitting: false,
+                rit_offset_hz: 0,
+                rit_enabled: false,
+                split: false,
+            })
+        }
+    }
+
+    /// Build an AppState with a mock radio pre-installed.
+    fn make_state_with_radio(tx_power: u32) -> AppState {
+        let state = AppState::new();
+        let mock: Box<dyn RadioControl> = Box::new(MockRadio { tx_power });
+        *state.radio.lock().unwrap() = Some(mock);
+        state
+    }
+
+    #[test]
+    fn get_tx_power_returns_value_from_radio() {
+        let state = make_state_with_radio(10);
+        // Verify the mock is set up correctly by calling through the trait object.
+        // (The Tauri command itself can't be tested directly in unit tests without
+        //  a real AppHandle, but this verifies the RadioControl delegate works.)
+        let watts = state
+            .radio
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .get_tx_power()
+            .unwrap();
+        assert_eq!(watts, 10);
+    }
+
+    #[test]
+    fn get_tx_power_returns_configured_value() {
+        let state = make_state_with_radio(50);
+        let watts = state
+            .radio
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .get_tx_power()
+            .unwrap();
+        assert_eq!(watts, 50);
+    }
+}

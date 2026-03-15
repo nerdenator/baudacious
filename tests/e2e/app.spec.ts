@@ -1,8 +1,23 @@
 import { test, expect } from '@playwright/test';
+import { mockInvoke, dismissStartupDialog } from './helpers';
+
+/** Base mocks used by tests that need Tauri IPC but don't care about serial/audio */
+const BASE_MOCKS = {
+  get_connection_status: {
+    serialConnected: false,
+    serialPort: null,
+    audioStreaming: false,
+    audioDevice: null,
+  },
+  list_audio_devices: [],
+  list_serial_ports: [],
+};
 
 test.describe('PSK-31 Client UI', () => {
   test.beforeEach(async ({ page }) => {
+    await mockInvoke(page, BASE_MOCKS);
     await page.goto('/');
+    await dismissStartupDialog(page);
   });
 
   test('main layout renders correctly', async ({ page }) => {
@@ -72,7 +87,9 @@ test.describe('PSK-31 Client UI', () => {
 
 test.describe('Theme Toggle', () => {
   test.beforeEach(async ({ page }) => {
+    await mockInvoke(page, BASE_MOCKS);
     await page.goto('/');
+    await dismissStartupDialog(page);
     // Clear any saved theme preference
     await page.evaluate(() => localStorage.removeItem('psk31-theme'));
   });
@@ -109,8 +126,9 @@ test.describe('Theme Toggle', () => {
     const theme = await page.evaluate(() => localStorage.getItem('psk31-theme'));
     expect(theme).toBeTruthy();
 
-    // Reload page
+    // Reload page — need to dismiss the dialog again after reload
     await page.reload();
+    await dismissStartupDialog(page);
 
     // Theme should persist
     const savedTheme = await page.locator('html').getAttribute('data-theme');
@@ -120,7 +138,9 @@ test.describe('Theme Toggle', () => {
 
 test.describe('Waterfall Interaction', () => {
   test.beforeEach(async ({ page }) => {
+    await mockInvoke(page, BASE_MOCKS);
     await page.goto('/');
+    await dismissStartupDialog(page);
   });
 
   test('clicking waterfall updates frequency display', async ({ page }) => {
@@ -138,15 +158,26 @@ test.describe('Waterfall Interaction', () => {
 
 test.describe('TX Flow (Mock)', () => {
   test('send button does nothing with empty input', async ({ page }) => {
-    // Mock invoke so startTx resolves
+    // Mock invoke so startTx resolves; return connected serial so send button is enabled
     await page.addInitScript(() => {
       (window as any).__TAURI_INTERNALS__ = {
-        invoke: () => Promise.resolve(null),
+        invoke: (cmd: string) => {
+          if (cmd === 'get_connection_status') {
+            return Promise.resolve({
+              serialConnected: true,
+              serialPort: '/dev/cu.test',
+              audioStreaming: false,
+              audioDevice: null,
+            });
+          }
+          return Promise.resolve(null);
+        },
         metadata: { currentWebview: { label: 'main' }, currentWindow: { label: 'main' } },
         convertFileSrc: (src: string) => src,
       };
     });
     await page.goto('/');
+    await dismissStartupDialog(page);
 
     const txInput = page.locator('#tx-input');
     await txInput.fill('');
@@ -161,6 +192,14 @@ test.describe('TX Flow (Mock)', () => {
     await page.addInitScript(() => {
       (window as any).__TAURI_INTERNALS__ = {
         invoke: (cmd: string) => {
+          if (cmd === 'get_connection_status') {
+            return Promise.resolve({
+              serialConnected: true,
+              serialPort: '/dev/cu.test',
+              audioStreaming: false,
+              audioDevice: null,
+            });
+          }
           if (cmd === 'start_tx') {
             // Simulate tx-status "complete" event after 500ms
             setTimeout(() => {
@@ -176,6 +215,7 @@ test.describe('TX Flow (Mock)', () => {
       };
     });
     await page.goto('/');
+    await dismissStartupDialog(page);
 
     // Need an audio output device selected for TX to proceed
     await page.evaluate(() => {
@@ -201,12 +241,23 @@ test.describe('TX Flow (Mock)', () => {
   test('abort button returns to RX state', async ({ page }) => {
     await page.addInitScript(() => {
       (window as any).__TAURI_INTERNALS__ = {
-        invoke: () => Promise.resolve(null),
+        invoke: (cmd: string) => {
+          if (cmd === 'get_connection_status') {
+            return Promise.resolve({
+              serialConnected: true,
+              serialPort: '/dev/cu.test',
+              audioStreaming: false,
+              audioDevice: null,
+            });
+          }
+          return Promise.resolve(null);
+        },
         metadata: { currentWebview: { label: 'main' }, currentWindow: { label: 'main' } },
         convertFileSrc: (src: string) => src,
       };
     });
     await page.goto('/');
+    await dismissStartupDialog(page);
 
     // Add an audio output device
     await page.evaluate(() => {
@@ -238,7 +289,9 @@ test.describe('TX Flow (Mock)', () => {
 
 test.describe('Menu Event Handling', () => {
   test.beforeEach(async ({ page }) => {
+    await mockInvoke(page, BASE_MOCKS);
     await page.goto('/');
+    await dismissStartupDialog(page);
   });
 
   test('theme_light menu event sets light theme', async ({ page }) => {
@@ -269,7 +322,9 @@ test.describe('Menu Event Handling', () => {
 
 test.describe('Visual Regression', () => {
   test('main UI screenshot - light theme', async ({ page }) => {
+    await mockInvoke(page, BASE_MOCKS);
     await page.goto('/');
+    await dismissStartupDialog(page);
     await page.evaluate(() => {
       document.documentElement.setAttribute('data-theme', 'light');
       localStorage.setItem('psk31-theme', 'light');
@@ -286,7 +341,9 @@ test.describe('Visual Regression', () => {
   });
 
   test('main UI screenshot - dark theme', async ({ page }) => {
+    await mockInvoke(page, BASE_MOCKS);
     await page.goto('/');
+    await dismissStartupDialog(page);
     await page.evaluate(() => {
       document.documentElement.setAttribute('data-theme', 'dark');
       localStorage.setItem('psk31-theme', 'dark');

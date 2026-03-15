@@ -2,6 +2,7 @@
 
 import { startTx, stopTx } from '../services/backend-api';
 import { listenTxStatus } from '../services/tx-bridge';
+import { onSerialChanged } from '../services/app-state';
 
 export function setupTxButtons(): void {
   const sendBtn = document.querySelector('.tx-btn-send') as HTMLButtonElement;
@@ -12,6 +13,12 @@ export function setupTxButtons(): void {
   const txInput = document.getElementById('tx-input') as HTMLTextAreaElement;
 
   if (!sendBtn || !abortBtn) return;
+
+  let serialConnected = false;
+  onSerialChanged((connected) => {
+    serialConnected = connected;
+    sendBtn.disabled = !connected;
+  });
 
   sendBtn.addEventListener('click', async () => {
     const text = txInput.value.trim();
@@ -90,7 +97,7 @@ export function setupTxButtons(): void {
       pttIndicator?.classList.add('rx');
       if (pttIndicator) pttIndicator.textContent = 'RX';
       if (pttStatus) pttStatus.textContent = 'Receiving';
-      sendBtn.disabled = false;
+      sendBtn.disabled = !serialConnected;
       abortBtn.disabled = true;
       txInput.disabled = false;
     }

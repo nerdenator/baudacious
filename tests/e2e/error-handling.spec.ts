@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { mockInvoke, fireEvent } from './helpers';
+import { mockInvoke, fireEvent, dismissStartupDialog } from './helpers';
 
 /**
  * Phase 6 E2E tests for error handling, status bar, and the full application flow.
@@ -18,6 +18,39 @@ const DISCONNECTED_STATUS = {
   },
   list_audio_devices: [],
   list_serial_ports: [],
+};
+
+/** Auto-connect mocks for tests that need a connected radio */
+const AUTO_CONNECT_MOCKS = {
+  get_connection_status: {
+    serialConnected: false,
+    serialPort: null,
+    audioStreaming: false,
+    audioDevice: null,
+  },
+  load_configuration: {
+    name: 'Default',
+    audio_input: null,
+    audio_output: null,
+    serial_port: '/dev/cu.usbserial-1420',
+    baud_rate: 38400,
+    radio_type: 'FT-991A',
+    carrier_freq: 1000.0,
+    waterfall_palette: 'classic',
+    waterfall_noise_floor: -100,
+    waterfall_zoom: 1,
+    tx_power_watts: 10,
+  },
+  connect_serial: {
+    port: '/dev/cu.usbserial-1420',
+    baudRate: 38400,
+    frequencyHz: 14070000,
+    mode: 'DATA-USB',
+    connected: true,
+  },
+  list_serial_ports: [
+    { name: '/dev/cu.usbserial-1420', portType: 'USB (10C4:EA60)', deviceHint: null },
+  ],
 };
 
 test.describe('Status Bar', () => {
@@ -69,28 +102,13 @@ test.describe('Error Toasts', () => {
 
   test('serial-disconnected event resets serial panel to N/C', async ({ page }) => {
     await mockInvoke(page, {
-      get_connection_status: {
-        serialConnected: false,
-        serialPort: null,
-        audioStreaming: false,
-        audioDevice: null,
-      },
-      list_serial_ports: [{ name: '/dev/cu.usbserial-1420', portType: 'USB (10C4:EA60)', deviceHint: null }],
-      connect_serial: {
-        port: '/dev/cu.usbserial-1420',
-        baudRate: 38400,
-        frequencyHz: 14070000,
-        mode: 'DATA-USB',
-        connected: true,
-      },
+      ...AUTO_CONNECT_MOCKS,
       list_audio_devices: [],
     });
     await page.goto('/');
 
-    // Connect serial so the panel is in connected state
-    await page.locator('#serial-port').selectOption('/dev/cu.usbserial-1420');
-    await page.locator('#serial-connect-btn').click();
-    await expect(page.locator('#cat-status .status-dot')).toHaveClass(/connected/);
+    // Wait for auto-connect to complete — CAT should be connected
+    await expect(page.locator('#cat-status .status-dot')).toHaveClass(/connected/, { timeout: 5000 });
 
     // Backend fires a disconnect event
     await fireEvent(page, 'serial-disconnected', {
@@ -101,7 +119,7 @@ test.describe('Error Toasts', () => {
     // Panel should reset
     await expect(page.locator('#cat-status .status-text')).toHaveText('N/C');
     await expect(page.locator('#cat-status .status-dot')).toHaveClass(/disconnected/);
-    await expect(page.locator('#serial-connect-btn')).toHaveText('Connect');
+    await expect(page.locator('#radio-port-name')).toHaveText('Not connected');
   });
 
   test('audio-status error event shows error toast', async ({ page }) => {
@@ -128,6 +146,7 @@ test.describe('Error Toasts', () => {
       list_serial_ports: [],
     });
     await page.goto('/');
+    await dismissStartupDialog(page);
 
     // Start audio so the panel is in streaming state
     await page.locator('#audio-input').selectOption('mic-1');
@@ -144,22 +163,9 @@ test.describe('Error Toasts', () => {
 });
 
 test.describe('Full Application Flow', () => {
-  test('connect serial → start audio → receive text → transmit → disconnect', async ({ page }) => {
+  test('auto-connect serial → start audio → receive text → transmit → disconnect', async ({ page }) => {
     await mockInvoke(page, {
-      get_connection_status: {
-        serialConnected: false,
-        serialPort: null,
-        audioStreaming: false,
-        audioDevice: null,
-      },
-      list_serial_ports: [{ name: '/dev/cu.usbserial-1420', portType: 'USB (10C4:EA60)', deviceHint: null }],
-      connect_serial: {
-        port: '/dev/cu.usbserial-1420',
-        baudRate: 38400,
-        frequencyHz: 14070000,
-        mode: 'DATA-USB',
-        connected: true,
-      },
+      ...AUTO_CONNECT_MOCKS,
       disconnect_serial: null,
       list_audio_devices: [
         { id: 'mic-1', name: 'FT-991A USB Audio CODEC', isInput: true, isDefault: false },
@@ -172,7 +178,6 @@ test.describe('Full Application Flow', () => {
     });
 
     // When start_tx is called, fire a tx-status:complete event after a short delay
-    // (mirrors the pattern in app.spec.ts)
     await page.addInitScript(() => {
       const orig = (window as any).__TAURI_INTERNALS__.invoke;
       (window as any).__TAURI_INTERNALS__.invoke = (cmd: string, args?: any) => {
@@ -190,12 +195,9 @@ test.describe('Full Application Flow', () => {
 
     await page.goto('/');
 
-    // ── Step 1: Connect serial ──────────────────────────────────────────────
-    await page.locator('#serial-port').selectOption('/dev/cu.usbserial-1420');
-    await page.locator('#serial-connect-btn').click();
-
+    // ── Step 1: Auto-connect serial ─────────────────────────────────────────
     // Frequency and mode update from the connect response
-    await expect(page.locator('#freq-mhz-input')).toHaveValue('14.070');
+    await expect(page.locator('#freq-mhz-input')).toHaveValue('14.070', { timeout: 5000 });
     await expect(page.locator('#band-select')).toHaveValue('20m');
     await expect(page.locator('.frequency-mode')).toHaveText('DATA-USB');
 
@@ -234,14 +236,11 @@ test.describe('Full Application Flow', () => {
     await expect(page.locator('.ptt-indicator')).toHaveText('RX', { timeout: 3000 });
 
     // ── Step 5: Disconnect serial ───────────────────────────────────────────
-    // Connect button flashes for 10s before showing "Disconnect"
-    await expect(page.locator('#serial-connect-btn')).toHaveText('Disconnect', {
-      timeout: 12000,
-    });
-    await page.locator('#serial-connect-btn').click();
+    await expect(page.locator('#radio-disconnect-btn')).toBeVisible();
+    await page.locator('#radio-disconnect-btn').click();
 
     await expect(page.locator('#cat-status .status-text')).toHaveText('N/C');
-    await expect(page.locator('#serial-connect-btn')).toHaveText('Connect');
+    await expect(page.locator('#radio-port-name')).toHaveText('Not connected');
   });
 });
 
@@ -256,6 +255,13 @@ test.describe('TX PTT Regression', () => {
 
     await mockInvoke(page, {
       ...DISCONNECTED_STATUS,
+      // Override to connected so the send button is enabled
+      get_connection_status: {
+        serialConnected: true,
+        serialPort: '/dev/cu.test',
+        audioStreaming: false,
+        audioDevice: null,
+      },
       start_tx: null,
       stop_tx: null,
     });
@@ -280,6 +286,7 @@ test.describe('TX PTT Regression', () => {
     });
 
     await page.goto('/');
+    await dismissStartupDialog(page);
 
     // Inject an audio output option so the TX send button is not blocked
     await page.evaluate(() => {

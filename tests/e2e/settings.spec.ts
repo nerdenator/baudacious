@@ -32,8 +32,8 @@ const BASE_MOCKS = {
   list_configurations: ['Default', 'Contest'],
   load_configuration: DEFAULT_CONFIG,
   list_audio_devices: [
-    { id: 'mic-1', name: 'Built-in Microphone', isInput: true, isDefault: true },
-    { id: 'spk-1', name: 'Built-in Speakers', isInput: false, isDefault: true },
+    { id: 'mic-1', name: 'Built-in Microphone', isInput: true, isOutput: false, isDefault: true, outputUnverified: false },
+    { id: 'spk-1', name: 'Built-in Speakers', isInput: false, isOutput: true, isDefault: true, outputUnverified: false },
   ],
   save_configuration: null,
   delete_configuration: null,

@@ -1,15 +1,11 @@
-/** Serial panel — populates port dropdown, wires connect/disconnect button,
- *  and manages the band selector + per-band frequency input.
+/** Serial panel — manages band selector + per-band frequency input,
+ *  and exposes connectFromConfig() for auto-connect / settings Test Connection.
  */
 
-import { listSerialPorts, connectSerial, disconnectSerial, setFrequency, setMode, getRadioState } from '../services/backend-api';
+import { connectSerial, disconnectSerial, setFrequency, setMode, getRadioState } from '../services/backend-api';
 import { setSerialState } from '../services/app-state';
-
-/** Default baud rate for FT-991A */
-const DEFAULT_BAUD_RATE = 38400;
-
-/** How long the connect button stays green after a successful connection (ms) */
-const SUCCESS_FLASH_MS = 10_000;
+import { syncTxPowerFromRadio } from './tx-power-panel';
+import type { RadioInfo } from '../types';
 
 type BandEntry = {
   readonly name: string;
@@ -38,6 +34,19 @@ function dataModeForHz(hz: number): string {
   return hz < 10_000_000 ? 'DATA-LSB' : 'DATA-USB';
 }
 
+function detectBand(hz: number): BandEntry | null {
+  return BAND_PLAN.find(b => hz >= b.minHz && hz <= b.maxHz) ?? null;
+}
+
+function applyBandToInput(band: BandEntry, input: HTMLInputElement, hint: HTMLElement | null): void {
+  const minMhz = band.minHz / 1e6;
+  const maxMhz = band.maxHz / 1e6;
+  input.min = minMhz.toFixed(3);
+  input.max = maxMhz.toFixed(3);
+  input.value = (band.psk31Hz / 1e6).toFixed(3);
+  if (hint) hint.textContent = `(${minMhz.toFixed(3)}–${maxMhz.toFixed(3)})`;
+}
+
 let _resetUi: (() => void) | null = null;
 
 /** Reset the serial panel to disconnected state (e.g. on backend-initiated disconnect) */
@@ -45,9 +54,24 @@ export function resetSerialPanel(): void {
   _resetUi?.();
 }
 
-export function setupSerialPanel(): void {
-  const dropdown = document.getElementById('serial-port') as HTMLSelectElement;
-  const connectBtn = document.getElementById('serial-connect-btn') as HTMLButtonElement;
+/**
+ * Connect to a serial port using the given parameters, then run all post-connect
+ * setup (band detect, mode correction, poll start, sidebar update, TX power sync).
+ *
+ * Used by auto-connect on startup and Settings → Test Connection.
+ */
+export async function connectFromConfig(port: string, baudRate: number): Promise<void> {
+  const info = await connectSerial(port, baudRate);
+  handleConnectSuccess(info);
+}
+
+/**
+ * Post-connect logic — updates sidebar, starts polling, syncs TX power.
+ * Exported so main.ts can call it on reload when the backend is already connected.
+ */
+export function handleConnectSuccess(info: RadioInfo): void {
+  const portNameEl = document.getElementById('radio-port-name');
+  const disconnectBtn = document.getElementById('radio-disconnect-btn') as HTMLButtonElement | null;
   const bandSelect = document.getElementById('band-select') as HTMLSelectElement;
   const freqInput = document.getElementById('freq-mhz-input') as HTMLInputElement;
   const rangeHint = document.getElementById('freq-range-hint') as HTMLElement;
@@ -55,15 +79,96 @@ export function setupSerialPanel(): void {
   const catDot = document.querySelector('#cat-status .status-dot') as HTMLElement;
   const catText = document.querySelector('#cat-status .status-text') as HTMLElement;
 
-  if (!dropdown || !connectBtn) return;
+  // Update sidebar status row
+  if (portNameEl) portNameEl.textContent = info.port;
+  if (disconnectBtn) disconnectBtn.style.display = '';
 
-  let connected = false;
-  let flashTimeout: number | null = null;
-  let pollInterval: number | null = null;
-  let lastUserActionAt = 0;
-  const USER_ACTION_SUPPRESS_MS = 4_000;
-  let connectionId = 0;
-  let activeBand: BandEntry | null = null;
+  // Detect band from reported frequency and update controls
+  const band = detectBand(info.frequencyHz);
+  _activeBand = band;
+  bandSelect.disabled = false;
+  freqInput.disabled = false;
+  if (band) {
+    bandSelect.value = band.name;
+    applyBandToInput(band, freqInput, rangeHint);
+    // Show actual current freq (may differ from the calling freq)
+    freqInput.value = (info.frequencyHz / 1e6).toFixed(3);
+  } else {
+    bandSelect.value = '';
+    freqInput.min = '1.8';
+    freqInput.max = '30';
+    freqInput.value = (info.frequencyHz / 1e6).toFixed(3);
+    if (rangeHint) rangeHint.textContent = '';
+  }
+  if (freqMode) freqMode.textContent = info.mode;
+
+  // Update CAT status indicator
+  if (catDot) {
+    catDot.classList.remove('disconnected');
+    catDot.classList.add('connected');
+  }
+  if (catText) {
+    catText.classList.remove('disconnected');
+    catText.classList.add('connected');
+    catText.textContent = 'OK';
+  }
+
+  // Mark connected in app-state
+  setSerialState(true, info.port);
+
+  // Sync TX power slider with actual radio power
+  syncTxPowerFromRadio();
+
+  // Start polling radio state every 2s to track knob/VFO changes on the rig
+  _connected = true;
+  if (_pollInterval) clearInterval(_pollInterval);
+  _pollInterval = window.setInterval(_syncRadioState, 2_000);
+}
+
+// Module-level state shared between handleConnectSuccess and the event handlers
+// set up in setupSerialPanel().
+let _connected = false;
+let _pollInterval: number | null = null;
+let _activeBand: BandEntry | null = null;
+let _lastUserActionAt = 0;
+const USER_ACTION_SUPPRESS_MS = 4_000;
+
+function _syncRadioState(): void {
+  const bandSelect = document.getElementById('band-select') as HTMLSelectElement;
+  const freqInput = document.getElementById('freq-mhz-input') as HTMLInputElement;
+  const rangeHint = document.getElementById('freq-range-hint') as HTMLElement;
+  const freqMode = document.getElementById('frequency-mode') as HTMLElement;
+
+  if (Date.now() - _lastUserActionAt < USER_ACTION_SUPPRESS_MS) return;
+  if (document.activeElement === freqInput) return;
+  getRadioState().then(status => {
+    if (!_connected) return;
+    if (Date.now() - _lastUserActionAt < USER_ACTION_SUPPRESS_MS) return;
+    if (document.activeElement === freqInput) return;
+    const hz = status.frequencyHz;
+    const band = detectBand(hz);
+    _activeBand = band;
+    if (band) {
+      bandSelect.value = band.name;
+      freqInput.min = (band.minHz / 1e6).toFixed(3);
+      freqInput.max = (band.maxHz / 1e6).toFixed(3);
+      if (rangeHint) rangeHint.textContent = `(${(band.minHz / 1e6).toFixed(3)}–${(band.maxHz / 1e6).toFixed(3)})`;
+    } else {
+      bandSelect.value = '';
+    }
+    freqInput.value = (hz / 1e6).toFixed(3);
+    if (freqMode) freqMode.textContent = status.mode;
+  }).catch(() => { /* radio may be briefly busy */ });
+}
+
+export function setupSerialPanel(onOpenSettings: (tab: 'radio' | 'general') => void): void {
+  const configureBtn = document.getElementById('radio-configure-btn') as HTMLButtonElement;
+  const disconnectBtn = document.getElementById('radio-disconnect-btn') as HTMLButtonElement;
+  const portNameEl = document.getElementById('radio-port-name');
+  const bandSelect = document.getElementById('band-select') as HTMLSelectElement;
+  const freqInput = document.getElementById('freq-mhz-input') as HTMLInputElement;
+  const rangeHint = document.getElementById('freq-range-hint') as HTMLElement;
+  const freqMode = document.getElementById('frequency-mode') as HTMLElement;
 
   // Populate band dropdown from BAND_PLAN
   for (const band of BAND_PLAN) {
@@ -73,16 +178,26 @@ export function setupSerialPanel(): void {
     bandSelect.appendChild(opt);
   }
 
-  // Populate serial dropdown from backend on load
-  populateDropdown(dropdown);
+  // Configure button → open settings on Radio tab
+  configureBtn?.addEventListener('click', () => onOpenSettings('radio'));
+
+  // Disconnect button → call disconnectSerial then reset UI
+  disconnectBtn?.addEventListener('click', async () => {
+    try {
+      await disconnectSerial();
+    } catch (err) {
+      console.error('Disconnect failed:', err);
+    }
+    resetUi();
+  });
 
   // Band select change: jump to PSK-31 calling freq and set correct DATA mode
   bandSelect.addEventListener('change', () => {
-    if (!connected) return;
-    lastUserActionAt = Date.now();
+    if (!_connected) return;
+    _lastUserActionAt = Date.now();
     const band = BAND_PLAN.find(b => b.name === bandSelect.value) ?? null;
     if (!band) return;
-    activeBand = band;
+    _activeBand = band;
     applyBandToInput(band, freqInput, rangeHint);
     const mode = dataModeForHz(band.psk31Hz);
     if (freqMode) freqMode.textContent = mode;
@@ -92,13 +207,26 @@ export function setupSerialPanel(): void {
 
   // Freq input commit: clamp to band range + send on blur or Enter
   function commitFreq(): void {
-    if (!connected) return;
-    lastUserActionAt = Date.now();
+    if (!_connected) return;
+    _lastUserActionAt = Date.now();
     let mhz = parseFloat(freqInput.value);
     if (isNaN(mhz)) return;
-    if (activeBand) {
-      mhz = Math.max(activeBand.minHz / 1e6, Math.min(activeBand.maxHz / 1e6, mhz));
-      freqInput.value = mhz.toFixed(3);
+    if (_activeBand) {
+      const minMhz = _activeBand.minHz / 1e6;
+      const maxMhz = _activeBand.maxHz / 1e6;
+      if (mhz < minMhz || mhz > maxMhz) {
+        if (rangeHint) {
+          rangeHint.textContent = `Change band to enter a frequency outside ${_activeBand.name} (${minMhz.toFixed(3)}–${maxMhz.toFixed(3)} MHz)`;
+          rangeHint.classList.add('range-hint-error');
+          window.setTimeout(() => {
+            rangeHint.textContent = `(${minMhz.toFixed(3)}–${maxMhz.toFixed(3)})`;
+            rangeHint.classList.remove('range-hint-error');
+          }, 4000);
+        }
+        // Don't send any CAT commands — restore input to band min/max edge and stop.
+        freqInput.value = (Math.max(minMhz, Math.min(maxMhz, mhz))).toFixed(3);
+        return;
+      }
     }
     const hz = Math.round(mhz * 1e6);
     const mode = dataModeForHz(hz);
@@ -107,147 +235,23 @@ export function setupSerialPanel(): void {
     setMode(mode).catch(err => console.error('set_mode failed:', err));
   }
 
-  // Poll radio state every 2s while connected to reflect knob/button changes on the rig.
-  // Suppressed for USER_ACTION_SUPPRESS_MS after any user-initiated change so the app
-  // doesn't overwrite UI state before the radio has processed the command.
-  function syncRadioState(): void {
-    if (Date.now() - lastUserActionAt < USER_ACTION_SUPPRESS_MS) return;
-    getRadioState().then(status => {
-      if (!connected) return;
-      if (Date.now() - lastUserActionAt < USER_ACTION_SUPPRESS_MS) return;
-      const hz = status.frequencyHz;
-      const band = detectBand(hz);
-      activeBand = band;
-      if (band) {
-        bandSelect.value = band.name;
-        freqInput.min = (band.minHz / 1e6).toFixed(3);
-        freqInput.max = (band.maxHz / 1e6).toFixed(3);
-        if (rangeHint) rangeHint.textContent = `(${(band.minHz / 1e6).toFixed(3)}–${(band.maxHz / 1e6).toFixed(3)})`;
-      } else {
-        bandSelect.value = '';
-      }
-      freqInput.value = (hz / 1e6).toFixed(3);
-      if (freqMode) freqMode.textContent = status.mode;
-    }).catch(() => { /* radio may be briefly busy */ });
-  }
-
   freqInput.addEventListener('blur', commitFreq);
   freqInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); commitFreq(); freqInput.blur(); }
   });
 
-  connectBtn.addEventListener('click', async () => {
-    if (connected) {
-      try {
-        await disconnectSerial();
-      } catch (err) {
-        console.error('Disconnect failed:', err);
-      }
-      resetUi();
-      return;
-    }
-
-    const port = dropdown.value;
-    if (!port) return;
-
-    connectionId++;
-    const thisConnection = connectionId;
-
-    connectBtn.disabled = true;
-    connectBtn.textContent = 'Connecting...';
-
-    try {
-      const info = await connectSerial(port, DEFAULT_BAUD_RATE);
-
-      if (thisConnection !== connectionId) return;
-
-      connected = true;
-      setSerialState(true, port);
-
-      // Detect band from reported frequency and update controls
-      const band = detectBand(info.frequencyHz);
-      activeBand = band;
-      bandSelect.disabled = false;
-      freqInput.disabled = false;
-      if (band) {
-        bandSelect.value = band.name;
-        applyBandToInput(band, freqInput, rangeHint);
-        // Show actual current freq (may differ from the calling freq)
-        freqInput.value = (info.frequencyHz / 1e6).toFixed(3);
-      } else {
-        bandSelect.value = '';
-        freqInput.min = '1.8';
-        freqInput.max = '30';
-        freqInput.value = (info.frequencyHz / 1e6).toFixed(3);
-        if (rangeHint) rangeHint.textContent = '';
-      }
-      if (freqMode) freqMode.textContent = info.mode;
-
-      // Update CAT status indicator
-      if (catDot) {
-        catDot.classList.remove('disconnected');
-        catDot.classList.add('connected');
-      }
-      if (catText) {
-        catText.classList.remove('disconnected');
-        catText.classList.add('connected');
-        catText.textContent = 'OK';
-      }
-
-      // Flash button green for 10s
-      connectBtn.disabled = false;
-      connectBtn.textContent = 'Connected';
-      connectBtn.classList.add('connected');
-      dropdown.disabled = true;
-
-      // Start polling radio state every 2s to track knob/VFO changes on the rig
-      if (pollInterval) clearInterval(pollInterval);
-      pollInterval = window.setInterval(syncRadioState, 2_000);
-
-      if (flashTimeout) clearTimeout(flashTimeout);
-      flashTimeout = window.setTimeout(() => {
-        if (thisConnection === connectionId) {
-          connectBtn.classList.remove('connected');
-          connectBtn.textContent = 'Disconnect';
-        }
-        flashTimeout = null;
-      }, SUCCESS_FLASH_MS);
-    } catch (err) {
-      if (thisConnection !== connectionId) return;
-
-      console.error('Connect failed:', err);
-      connectBtn.disabled = false;
-      connectBtn.textContent = 'Connect';
-
-      if (catDot) {
-        catDot.classList.remove('connected');
-        catDot.classList.add('disconnected');
-      }
-      if (catText) {
-        catText.classList.remove('connected');
-        catText.classList.add('disconnected');
-        catText.textContent = 'Error';
-      }
-    }
-  });
-
   function resetUi(): void {
-    connected = false;
-    activeBand = null;
+    _connected = false;
+    _activeBand = null;
     setSerialState(false, null);
-    connectionId++;
-    if (flashTimeout) {
-      clearTimeout(flashTimeout);
-      flashTimeout = null;
+    if (_pollInterval) {
+      clearInterval(_pollInterval);
+      _pollInterval = null;
     }
-    if (pollInterval) {
-      clearInterval(pollInterval);
-      pollInterval = null;
-    }
-    connectBtn.disabled = false;
-    connectBtn.textContent = 'Connect';
-    connectBtn.classList.remove('connected');
-    dropdown.disabled = false;
+
+    // Sidebar status row
+    if (portNameEl) portNameEl.textContent = 'Not connected';
+    if (disconnectBtn) disconnectBtn.style.display = 'none';
 
     // Reset frequency controls to disabled/blank state
     bandSelect.value = '';
@@ -257,6 +261,8 @@ export function setupSerialPanel(): void {
     if (rangeHint) rangeHint.textContent = '';
     if (freqMode) freqMode.textContent = '—';
 
+    const catDot = document.querySelector('#cat-status .status-dot') as HTMLElement;
+    const catText = document.querySelector('#cat-status .status-text') as HTMLElement;
     if (catDot) {
       catDot.classList.remove('connected');
       catDot.classList.add('disconnected');
@@ -269,48 +275,4 @@ export function setupSerialPanel(): void {
   }
 
   _resetUi = resetUi;
-}
-
-/** Fetch serial ports from backend and populate the dropdown */
-async function populateDropdown(dropdown: HTMLSelectElement): Promise<void> {
-  try {
-    const ports = await listSerialPorts();
-    while (dropdown.options.length > 1) {
-      dropdown.remove(1);
-    }
-    for (const port of ports) {
-      const option = document.createElement('option');
-      option.value = port.name;
-      option.textContent = port.deviceHint
-        ? `${port.name} — ${port.deviceHint}`
-        : `${port.name} (${port.portType})`;
-      if (port.deviceHint) {
-        option.classList.add('port-known');
-      }
-      dropdown.appendChild(option);
-    }
-
-    // Auto-select if exactly one port has a known device hint and nothing is selected yet
-    if (!dropdown.value) {
-      const knownPorts = ports.filter(p => p.deviceHint);
-      if (knownPorts.length === 1) {
-        dropdown.value = knownPorts[0].name;
-      }
-    }
-  } catch (err) {
-    console.error('Failed to list serial ports:', err);
-  }
-}
-
-function detectBand(hz: number): BandEntry | null {
-  return BAND_PLAN.find(b => hz >= b.minHz && hz <= b.maxHz) ?? null;
-}
-
-function applyBandToInput(band: BandEntry, input: HTMLInputElement, hint: HTMLElement | null): void {
-  const minMhz = band.minHz / 1e6;
-  const maxMhz = band.maxHz / 1e6;
-  input.min = minMhz.toFixed(3);
-  input.max = maxMhz.toFixed(3);
-  input.value = (band.psk31Hz / 1e6).toFixed(3);
-  if (hint) hint.textContent = `(${minMhz.toFixed(3)}–${maxMhz.toFixed(3)})`;
 }

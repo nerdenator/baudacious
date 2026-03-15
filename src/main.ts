@@ -11,17 +11,20 @@ import { setupTxInput } from './components/tx-input';
 import { setupTxButtons } from './components/control-panel';
 import { setupWaterfallClick, setupWaterfallControls } from './components/waterfall-controls';
 import { setupThemeToggle } from './components/theme-toggle';
-import { setupSerialPanel } from './components/serial-panel';
-import { setupAudioPanel, resetAudioPanel, setSelectedAudioDevices } from './components/audio-panel';
+import { setupSerialPanel, connectFromConfig, handleConnectSuccess } from './components/serial-panel';
+import { showStartupRecoveryDialog, hideStartupRecoveryDialog } from './components/startup-dialog';
+import { setupTxPowerPanel } from './components/tx-power-panel';
+import { setupAudioPanel, resetAudioPanel, setSelectedAudioDevices, applyAudioInputDevice } from './components/audio-panel';
 import { setupStatusBar } from './components/status-bar';
 import { showToast } from './components/toast';
 import { setupMenuEvents } from './services/event-handlers';
-import { startFftBridge, listenAudioStatus, listenAudioStreamDot } from './services/audio-bridge';
+import { startFftBridge, listenAudioStatus } from './services/audio-bridge';
 import { startRxBridge } from './services/rx-bridge';
 import { startSerialBridge } from './services/serial-bridge';
 import { appendRxText } from './components/rx-display';
-import { loadConfiguration, saveConfiguration } from './services/backend-api';
-import { setupSettingsDialog } from './components/settings-dialog';
+import { loadConfiguration, saveConfiguration, getConnectionStatus, getRadioState } from './services/backend-api';
+import { invoke } from '@tauri-apps/api/core';
+import { setupSettingsDialog, openSettingsDialog } from './components/settings-dialog';
 import type { Configuration } from './types';
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -38,7 +41,8 @@ window.addEventListener('DOMContentLoaded', () => {
   setupRxDisplay();
   setupWaterfallClick(waterfall);
   setupThemeToggle();
-  setupSerialPanel();
+  setupSerialPanel((tab) => openSettingsDialog(tab));
+  setupTxPowerPanel();
   setupAudioPanel();
   setupMenuEvents();
 
@@ -57,11 +61,6 @@ window.addEventListener('DOMContentLoaded', () => {
       showToast('Audio device lost', 'error');
     }
   });
-
-  const streamDot = document.getElementById('audio-stream-dot');
-  if (streamDot) {
-    listenAudioStreamDot(streamDot);
-  }
 
   // Wire up serial bridge: backend-initiated disconnect → toast + reset UI
   startSerialBridge().catch((err) => {
@@ -105,7 +104,7 @@ window.addEventListener('DOMContentLoaded', () => {
           waterfall_palette: settings.palette,
           waterfall_noise_floor: settings.noiseFloor,
           waterfall_zoom: settings.zoomLevel,
-          tx_power_watts: 25,
+          tx_power_watts: 10,
         };
       } else {
         currentConfig.waterfall_palette = settings.palette;
@@ -128,7 +127,17 @@ window.addEventListener('DOMContentLoaded', () => {
         config.waterfall_zoom,
       );
       setSelectedAudioDevices(config.audio_input, config.audio_output);
-      showToast('Settings saved', 'info');
+      await applyAudioInputDevice(config.audio_input);
+      if (config.serial_port) {
+        try {
+          await connectFromConfig(config.serial_port, config.baud_rate ?? 38400);
+          showToast('Settings saved', 'info');
+        } catch (err) {
+          showToast(`Settings saved — radio connect failed: ${err}`, 'error');
+        }
+      } else {
+        showToast('Settings saved', 'info');
+      }
     },
   });
 
@@ -141,8 +150,69 @@ window.addEventListener('DOMContentLoaded', () => {
         config.waterfall_noise_floor,
         config.waterfall_zoom,
       );
+
+      // Restore saved audio devices
+      setSelectedAudioDevices(config.audio_input, config.audio_output);
+      applyAudioInputDevice(config.audio_input).catch((err) => {
+        console.warn('Failed to restore audio device on startup:', err);
+      });
+
+      // Auto-connect using saved serial port
+      const savedPort = config.serial_port;
+      const savedBaud = config.baud_rate ?? 38400;
+
+      function showRecovery(err: string): void {
+        showStartupRecoveryDialog(config.name ?? 'Default', err, {
+          onRetry: () => {
+            if (!savedPort) { showRecovery('No serial port configured'); return; }
+            connectFromConfig(savedPort, savedBaud)
+              .then(() => hideStartupRecoveryDialog())
+              .catch((e) => showRecovery(String(e)));
+          },
+          onSelectProfile: () => openSettingsDialog('general'),
+          onReconfigure:   () => openSettingsDialog('radio'),
+          onExit:          () => { invoke('exit_app').catch(() => window.close()); },
+        });
+      }
+
+      if (savedPort) {
+        // Check whether the backend already holds the connection open (e.g. after a
+        // Vite hot-reload where the Rust process was never restarted). If so, hydrate
+        // the UI from existing state instead of trying to re-open a busy serial port.
+        getConnectionStatus()
+          .then((status) => {
+            if (status.serialConnected && status.serialPort) {
+              return getRadioState().then((radioStatus) => {
+                handleConnectSuccess({
+                  port: status.serialPort!,
+                  baudRate: savedBaud,
+                  frequencyHz: radioStatus.frequencyHz,
+                  mode: radioStatus.mode,
+                  connected: true,
+                });
+              });
+            }
+            return connectFromConfig(savedPort, savedBaud);
+          })
+          .catch((err) => {
+            showRecovery(String(err));
+          });
+      } else {
+        showRecovery('No serial port configured');
+      }
     })
     .catch(() => {
-      // No saved config yet — defaults already applied
+      // No saved config yet — show recovery with default profile name
+      showStartupRecoveryDialog('Default', 'No serial port configured', {
+        onRetry: () => showStartupRecoveryDialog('Default', 'No serial port configured', { onRetry: () => {}, onSelectProfile: () => openSettingsDialog('general'), onReconfigure: () => openSettingsDialog('radio'), onExit: () => { invoke('exit_app').catch(() => window.close()); } }),
+        onSelectProfile: () => openSettingsDialog('general'),
+        onReconfigure:   () => openSettingsDialog('radio'),
+        onExit:          () => { invoke('exit_app').catch(() => window.close()); },
+      });
     });
+
+  // Suppress unused import warning for hideStartupRecoveryDialog
+  // (it is used inside settings-dialog.ts via the import there,
+  //  but we also re-export it so the import here is intentional)
+  void hideStartupRecoveryDialog;
 });

@@ -1,5 +1,6 @@
 //! Tauri command handlers
 
+pub mod app;
 pub mod audio;
 pub mod config;
 pub mod radio;

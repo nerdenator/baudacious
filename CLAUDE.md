@@ -18,7 +18,7 @@ src-tauri/src/
 ├── domain/      # Pure types (AudioDeviceInfo, Frequency, ModemConfig, errors)
 ├── ports/       # Trait definitions (AudioInput, AudioOutput, SerialConnection, RadioControl)
 ├── dsp/         # Signal processing - pure functions (FFT, NCO, filters, Costas loop)
-├── modem/       # PSK-31 protocol (varicode, encoder, decoder, pipeline)
+├── modem/       # PSK-31 protocol (varicode, encoder, decoder)
 ├── adapters/    # Implementations (cpal audio, serialport, FT-991A CAT)
 ├── commands/    # Tauri command handlers
 └── state.rs     # AppState with Arc<Mutex<>>
@@ -72,7 +72,6 @@ cargo test             # Run Rust unit tests (in src-tauri/)
 
 ## Known Deferred Items
 
-- **P7 — Encoder phase flip timing** (`src-tauri/src/modem/encoder.rs`): Phase is flipped at the start of each symbol (full amplitude), defeating raised cosine shaping. Correct fix requires splitting the envelope across the symbol boundary (look-ahead). Marked with TODO in source.
 - **P9 — CSP disabled** (`src-tauri/tauri.conf.json`): `"csp": null` disables Content Security Policy. Low risk for a local-only app but worth hardening. Replace with `"default-src 'self'; style-src 'self' 'unsafe-inline'"` when ready.
 
 ## License Consideration

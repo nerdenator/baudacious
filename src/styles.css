@@ -178,7 +178,7 @@ html, body {
 .waterfall-section {
   flex: 0 0 40%;
   min-height: 200px;
-  background: var(--bg-primary);
+  background: #000;
   position: relative;
   border-bottom: var(--border-subtle);
 }
@@ -275,7 +275,7 @@ html, body {
 
 .wf-gain-label {
   font-size: 9px;
-  color: var(--text-dim);
+  color: #8a8a9a;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -285,7 +285,7 @@ html, body {
   appearance: none;
   width: 72px;
   height: 3px;
-  background: var(--border-subtle);
+  background: #2a2f35;
   border-radius: 2px;
   cursor: pointer;
   outline: none;
@@ -313,7 +313,7 @@ html, body {
 .wf-gain-value {
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
-  color: var(--text-dim);
+  color: #8a8a9a;
   min-width: 28px;
 }
 
@@ -343,7 +343,7 @@ html, body {
   justify-content: space-between;
   align-items: flex-end;
   padding: 0 var(--gap-md) var(--gap-xs);
-  background: linear-gradient(to top, rgba(10, 12, 14, 0.9), transparent);
+  background: var(--bg-primary);
   pointer-events: none;
 }
 
@@ -607,6 +607,11 @@ html, body {
   background: var(--btn-abort-hover);
 }
 
+.tx-btn-send:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .tx-btn-abort:disabled {
   opacity: 0.4;
   cursor: not-allowed;
@@ -721,9 +726,10 @@ html, body {
 }
 
 .freq-mhz-input:disabled {
+  opacity: 0.4;
   color: var(--text-dim);
   text-shadow: none;
-  cursor: default;
+  cursor: not-allowed;
 }
 
 /* Hide browser spinners on number input */
@@ -743,6 +749,11 @@ html, body {
   font-size: 9px;
   color: var(--text-dim);
   min-height: 12px;
+}
+
+.freq-range-hint.range-hint-error {
+  color: var(--accent-tx);
+  font-size: 10px;
 }
 
 /* PTT Indicator */
@@ -822,6 +833,11 @@ html, body {
 
 .device-select:focus {
   border-color: var(--accent-freq);
+}
+
+.device-select:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .serial-connect-btn {
@@ -1261,23 +1277,304 @@ html, body {
    Audio streaming indicator dot
    ============================================================ */
 
-.stream-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
+
+/* TX Power panel */
+.tx-power-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-xs);
+}
+
+.tx-power-row {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-sm);
+}
+
+.tx-power-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right,
+    #22c55e 0% 25%,
+    #eab308 25% 30%,
+    #ef4444 30% 100%
+  );
+  cursor: pointer;
+  outline: none;
+}
+
+.tx-power-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
-  background: var(--accent-disconnected);
-  margin-left: 6px;
-  vertical-align: middle;
-  transition: background 0.3s;
+  background: var(--text-primary);
+  cursor: pointer;
 }
 
-.stream-dot.active {
-  background: var(--accent-warning);
-  animation: stream-pulse 1.5s ease-in-out infinite;
+.tx-power-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text-primary);
+  border: none;
+  cursor: pointer;
 }
 
-@keyframes stream-pulse {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.35; }
+.tx-power-slider:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.tx-power-slider:disabled::-webkit-slider-thumb {
+  cursor: not-allowed;
+}
+
+.tx-power-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  width: 36px;
+  text-align: right;
+  background: transparent;
+  border: none;
+  outline: none;
+  cursor: text;
+  padding: 0;
+}
+
+.tx-power-value::-webkit-outer-spin-button,
+.tx-power-value::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.tx-power-value[type=number] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.tx-power-value:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.tx-power-stepper {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.tx-stepper-btn {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  border-radius: 3px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.tx-stepper-btn:hover:not(:disabled) {
+  border-color: var(--accent-freq);
+  color: var(--accent-freq);
+}
+
+.tx-stepper-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.tx-power-green  { color: #22c55e; }
+.tx-power-yellow { color: #eab308; }
+.tx-power-red    { color: #ef4444; }
+
+.tx-power-zones {
+  display: flex;
+  justify-content: space-between;
+}
+
+.tx-zone-label  { font-size: 8px; }
+.tx-zone-green  { color: #22c55e; }
+.tx-zone-yellow { color: #eab308; flex: 1; text-align: center; }
+.tx-zone-red    { color: #ef4444; }
+
+.ptt-row {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-sm);
+  margin-top: var(--gap-xs);
+}
+
+/* ── Simplified sidebar radio status ──────────────────────────────────────── */
+.radio-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap-sm);
+}
+
+.radio-port-name {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text-dim);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.radio-configure-btn {
+  font-size: 10px;
+  padding: 2px 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  border-radius: 3px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.radio-configure-btn:hover {
+  border-color: var(--accent-freq);
+  color: var(--accent-freq);
+}
+
+.radio-disconnect-btn {
+  width: 100%;
+  margin-top: var(--gap-xs);
+  font-size: 10px;
+  padding: 3px 0;
+  background: transparent;
+  border: 1px solid rgba(255, 59, 48, 0.4);
+  color: rgba(255, 59, 48, 0.8);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.radio-disconnect-btn:hover {
+  background: rgba(255, 59, 48, 0.1);
+  border-color: rgba(255, 59, 48, 0.8);
+  color: rgba(255, 59, 48, 1);
+}
+
+/* ── Settings dialog – Test Connection ────────────────────────────────────── */
+.settings-test-row {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-sm);
+  padding: var(--gap-xs) 0;
+}
+
+.settings-test-btn {
+  font-size: 11px;
+  padding: 4px 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  border-radius: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.settings-test-btn:hover:not(:disabled) {
+  border-color: var(--accent-freq);
+  color: var(--accent-freq);
+}
+
+.settings-test-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.settings-test-status {
+  font-size: 10px;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-dim);
+}
+
+.settings-test-status.success { color: #22c55e; }
+.settings-test-status.error   { color: #ef4444; }
+
+/* ── Settings dialog – port header with refresh ───────────────────────────── */
+.settings-device-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 2px;
+}
+
+/* ── Startup Recovery Dialog ──────────────────────────────────────────────── */
+.startup-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.startup-dialog {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 24px;
+  width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-md);
+}
+
+.startup-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.startup-body {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.startup-recovery-btn {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 11px;
+  text-align: left;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.startup-recovery-btn:hover {
+  border-color: var(--accent-freq);
+  color: var(--accent-freq);
+}
+
+.startup-exit-btn {
+  border-color: rgba(255, 59, 48, 0.4);
+  color: rgba(255, 59, 48, 0.8);
+}
+
+.startup-exit-btn:hover {
+  background: rgba(255, 59, 48, 0.1);
+  border-color: rgba(255, 59, 48, 0.8);
+  color: rgba(255, 59, 48, 1);
 }

@@ -125,3 +125,17 @@ export async function fireEvent(
     [event, payload] as const,
   );
 }
+
+/**
+ * Dismiss the startup recovery dialog if it is present.
+ *
+ * The startup recovery dialog is shown on page load when no serial port is
+ * configured (or auto-connect fails). Tests that interact with UI elements
+ * behind the dialog must call this after page.goto('/').
+ */
+export async function dismissStartupDialog(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const overlay = document.querySelector('.startup-overlay');
+    if (overlay) overlay.remove();
+  });
+}

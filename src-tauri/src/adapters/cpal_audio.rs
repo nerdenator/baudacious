@@ -13,6 +13,73 @@ use crate::domain::{AudioDeviceInfo, AudioSample, Psk31Error, Psk31Result};
 use crate::ports::{AudioInput, AudioOutput};
 
 // ---------------------------------------------------------------------------
+// Device enumeration (shared by AudioInput and AudioOutput)
+// ---------------------------------------------------------------------------
+
+/// Enumerate all audio devices and detect input/output capability.
+///
+/// Uses `host.output_devices()` as the authoritative source for output
+/// capability. On macOS CoreAudio, `default_output_config()` fails for some
+/// USB devices (e.g. USB Audio CODEC) even though they are valid outputs and
+/// appear correctly in `output_devices()`. We fall back to
+/// `default_output_config()` as a secondary check to catch any edge cases.
+///
+/// `output_unverified` is set when a device passes the `default_output_config()`
+/// check but is NOT in `output_devices()` — an unusual edge case that warrants
+/// a separate UI group.
+fn enumerate_devices() -> crate::domain::Psk31Result<Vec<AudioDeviceInfo>> {
+    let host = cpal::default_host();
+    let default_input_name = host.default_input_device().and_then(|d| d.name().ok());
+    let default_output_name = host.default_output_device().and_then(|d| d.name().ok());
+
+    // Build set of confirmed output device names via output_devices() iterator.
+    // This correctly includes USB Audio CODEC on macOS where default_output_config() fails.
+    let confirmed_output_names: std::collections::HashSet<String> = host
+        .output_devices()
+        .map(|iter| iter.filter_map(|d| d.name().ok()).collect())
+        .unwrap_or_default();
+
+    // Use a HashMap keyed by name so duplicate entries (macOS exposes some USB duplex
+    // devices twice — once for the input stream, once for the output stream) get
+    // merged rather than dropped.
+    let mut device_map: std::collections::HashMap<String, AudioDeviceInfo> =
+        std::collections::HashMap::new();
+    let mut insertion_order: Vec<String> = Vec::new();
+
+    if let Ok(all) = host.devices() {
+        for device in all {
+            let name = device.name().unwrap_or_else(|_| "Unknown".to_string());
+            let is_input = device.default_input_config().is_ok();
+            let confirmed_out = confirmed_output_names.contains(&name);
+            let is_default = default_input_name.as_deref() == Some(name.as_str())
+                || default_output_name.as_deref() == Some(name.as_str());
+
+            if let Some(existing) = device_map.get_mut(&name) {
+                // Merge: OR the input flag in case we saw the output entry first
+                existing.is_input |= is_input;
+            } else {
+                insertion_order.push(name.clone());
+                device_map.insert(name.clone(), AudioDeviceInfo {
+                    id: name.clone(),
+                    name,
+                    is_input,
+                    is_output: true, // all devices offered as output candidates (see module doc)
+                    is_default,
+                    output_unverified: !confirmed_out,
+                });
+            }
+        }
+    }
+
+    let devices: Vec<AudioDeviceInfo> = insertion_order
+        .into_iter()
+        .filter_map(|name| device_map.remove(&name))
+        .collect();
+
+    Ok(devices)
+}
+
+// ---------------------------------------------------------------------------
 // AudioInput
 // ---------------------------------------------------------------------------
 
@@ -37,57 +104,7 @@ impl CpalAudioInput {
 
 impl AudioInput for CpalAudioInput {
     fn list_devices(&self) -> Psk31Result<Vec<AudioDeviceInfo>> {
-        let host = cpal::default_host();
-
-        let default_input = host.default_input_device();
-        let default_input_name = default_input.as_ref().and_then(|d| d.name().ok());
-
-        let mut devices = Vec::new();
-
-        // Input devices
-        if let Ok(input_devices) = host.input_devices() {
-            for device in input_devices {
-                let name = device.name().unwrap_or_else(|_| "Unknown".to_string());
-                let is_default = default_input_name
-                    .as_ref()
-                    .map(|dn| dn == &name)
-                    .unwrap_or(false);
-
-                devices.push(AudioDeviceInfo {
-                    id: name.clone(),
-                    name,
-                    is_input: true,
-                    is_default,
-                });
-            }
-        }
-
-        // Output devices: enumerate ALL devices (not just host.output_devices()).
-        // On macOS/CoreAudio, USB audio interfaces like the FT-991A report zero
-        // supported output configs via the cpal API even though they physically
-        // support output. Including all devices lets the user select them; if a
-        // device truly can't be opened for output, start() will return an error.
-        let default_output = host.default_output_device();
-        let default_output_name = default_output.as_ref().and_then(|d| d.name().ok());
-
-        if let Ok(all_devices) = host.devices() {
-            for device in all_devices {
-                let name = device.name().unwrap_or_else(|_| "Unknown".to_string());
-                let is_default = default_output_name
-                    .as_ref()
-                    .map(|dn| dn == &name)
-                    .unwrap_or(false);
-
-                devices.push(AudioDeviceInfo {
-                    id: name.clone(),
-                    name,
-                    is_input: false,
-                    is_default,
-                });
-            }
-        }
-
-        Ok(devices)
+        enumerate_devices()
     }
 
     fn start(
@@ -182,32 +199,7 @@ impl CpalAudioOutput {
 
 impl AudioOutput for CpalAudioOutput {
     fn list_devices(&self) -> Psk31Result<Vec<AudioDeviceInfo>> {
-        let host = cpal::default_host();
-        let default_output = host.default_output_device();
-        let default_output_name = default_output.as_ref().and_then(|d| d.name().ok());
-
-        let mut devices = Vec::new();
-
-        if let Ok(all_devices) = host.devices() {
-            for device in all_devices {
-                let name = device.name().unwrap_or_else(|_| "Unknown".to_string());
-                if device.supported_output_configs().map(|mut c| c.next().is_some()).unwrap_or(false) {
-                    let is_default = default_output_name
-                        .as_ref()
-                        .map(|dn| dn == &name)
-                        .unwrap_or(false);
-
-                    devices.push(AudioDeviceInfo {
-                        id: name.clone(),
-                        name,
-                        is_input: false,
-                        is_default,
-                    });
-                }
-            }
-        }
-
-        Ok(devices)
+        enumerate_devices()
     }
 
     fn start(
@@ -292,6 +284,7 @@ mod tests {
         let result = input.list_devices();
         assert!(result.is_ok());
     }
+
 
     #[test]
     fn test_stop_idempotent() {

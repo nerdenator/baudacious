@@ -83,7 +83,7 @@
             ></textarea>
           </div>
           <div class="tx-buttons">
-            <button class="tx-btn tx-btn-send">TX</button>
+            <button class="tx-btn tx-btn-send" disabled>TX</button>
             <button class="tx-btn tx-btn-abort" disabled>Abort</button>
           </div>
         </section>
@@ -91,6 +91,16 @@
 
       <!-- Sidebar Controls -->
       <aside class="sidebar">
+        <!-- Radio Control -->
+        <div class="sidebar-section">
+          <div class="section-label">Radio Control</div>
+          <div class="radio-status-row">
+            <span id="radio-port-name" class="radio-port-name">Not connected</span>
+            <button id="radio-configure-btn" class="radio-configure-btn">Configure</button>
+          </div>
+          <button id="radio-disconnect-btn" class="radio-disconnect-btn" style="display:none">Disconnect</button>
+        </div>
+
         <!-- Frequency -->
         <div class="sidebar-section">
           <div class="section-label">Frequency</div>
@@ -108,12 +118,29 @@
           </div>
         </div>
 
-        <!-- PTT Status -->
+        <!-- TX Power -->
         <div class="sidebar-section">
-          <div class="section-label">PTT</div>
-          <div class="ptt-container">
-            <div class="ptt-indicator rx">RX</div>
-            <div class="ptt-status">Receiving</div>
+          <div class="section-label">TX Power</div>
+          <div class="tx-power-container">
+            <div class="tx-power-row">
+              <input type="range" id="tx-power-slider" class="tx-power-slider"
+                     min="0" max="100" value="10" step="1" disabled>
+              <div class="tx-power-stepper">
+                <button id="tx-power-down" class="tx-stepper-btn" disabled>−</button>
+                <input type="number" id="tx-power-value" class="tx-power-value tx-power-green"
+                       min="0" max="100" value="10" step="1" disabled>
+                <button id="tx-power-up" class="tx-stepper-btn" disabled>+</button>
+              </div>
+            </div>
+            <div class="tx-power-zones">
+              <span class="tx-zone-label tx-zone-green">0–25</span>
+              <span class="tx-zone-label tx-zone-yellow">25–30</span>
+              <span class="tx-zone-label tx-zone-red">30–100 W</span>
+            </div>
+            <div class="ptt-row">
+              <div class="ptt-indicator rx">RX</div>
+              <div class="ptt-status">Receiving</div>
+            </div>
           </div>
         </div>
 
@@ -126,18 +153,6 @@
           </div>
         </div>
 
-        <!-- Serial Port -->
-        <div class="sidebar-section">
-          <div class="section-label">Radio Control</div>
-          <div class="device-group">
-            <div class="device-label">Serial Port</div>
-            <select class="device-select" id="serial-port">
-              <option value="">Select port...</option>
-            </select>
-            <button class="serial-connect-btn" id="serial-connect-btn">Connect</button>
-          </div>
-        </div>
-
         <!-- Audio Devices -->
         <div class="sidebar-section">
           <div class="section-label">
@@ -147,7 +162,6 @@
           <div class="device-group">
             <div class="device-label">
               Input
-              <span id="audio-stream-dot" class="stream-dot" title="Audio input streaming"></span>
             </div>
             <select class="device-select" id="audio-input">
               <option value="">Select device...</option>

@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { mockInvoke } from './helpers';
+import { mockInvoke, dismissStartupDialog } from './helpers';
 
 /**
  * Phase 5 E2E tests for RX (receive) subsystem.
@@ -8,10 +8,13 @@ import { mockInvoke } from './helpers';
  * frequency updates, and the rx-text event bridge.
  */
 
+const BASE_MOCKS = { list_audio_devices: [], list_serial_ports: [] };
+
 test.describe('RX Display', () => {
   test('RX panel shows decoded text when injected', async ({ page }) => {
-    await mockInvoke(page, { list_audio_devices: [] });
+    await mockInvoke(page, BASE_MOCKS);
     await page.goto('/');
+    await dismissStartupDialog(page);
 
     const rxContent = page.locator('#rx-content');
 
@@ -30,8 +33,9 @@ test.describe('RX Display', () => {
   });
 
   test('clear button clears decoded text', async ({ page }) => {
-    await mockInvoke(page, { list_audio_devices: [] });
+    await mockInvoke(page, BASE_MOCKS);
     await page.goto('/');
+    await dismissStartupDialog(page);
 
     const rxContent = page.locator('#rx-content');
     const clearBtn = page.locator('.rx-controls .rx-btn');
@@ -47,8 +51,9 @@ test.describe('RX Display', () => {
   });
 
   test('RX display auto-scrolls on new text', async ({ page }) => {
-    await mockInvoke(page, { list_audio_devices: [] });
+    await mockInvoke(page, BASE_MOCKS);
     await page.goto('/');
+    await dismissStartupDialog(page);
 
     // Fill RX display with enough text to overflow, then append one more line
     // using the same pattern as appendRxText (textContent += ..., scrollTop = scrollHeight)
@@ -96,6 +101,7 @@ test.describe('Click-to-Tune', () => {
     });
 
     await page.goto('/');
+    await dismissStartupDialog(page);
 
     const canvas = page.locator('#waterfall-canvas');
     await canvas.click({ position: { x: 200, y: 50 } });
@@ -113,8 +119,9 @@ test.describe('Click-to-Tune', () => {
   });
 
   test('clicking waterfall updates frequency displays', async ({ page }) => {
-    await mockInvoke(page, { list_audio_devices: [] });
+    await mockInvoke(page, BASE_MOCKS);
     await page.goto('/');
+    await dismissStartupDialog(page);
 
     const canvas = page.locator('#waterfall-canvas');
     const freqDisplay = page.locator('.waterfall-freq');

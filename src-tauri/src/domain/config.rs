@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 fn default_tx_power_watts() -> u32 {
-    25
+    10
 }
 
 fn default_waterfall_palette() -> String {

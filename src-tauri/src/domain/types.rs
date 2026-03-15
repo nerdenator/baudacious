@@ -34,7 +34,11 @@ pub struct AudioDeviceInfo {
     pub id: String,
     pub name: String,
     pub is_input: bool,
+    pub is_output: bool,
     pub is_default: bool,
+    /// true = device is in host.output_devices() but default_output_config() fails
+    /// (e.g. USB Audio CODEC on macOS CoreAudio)
+    pub output_unverified: bool,
 }
 
 /// Information about a serial port

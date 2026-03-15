@@ -100,4 +100,4 @@ Post-code-review bug fix pass. Issues are prioritized by severity and grouped by
 - [x] B: Frontend audio listener safety
 - [x] C: Rust backend polish
 - [x] D: Data & display quality
-- [ ] E: Cleanup — DEFERRED
+- [x] E: Cleanup — completed via PLAN_PIPELINE_REFACTOR.md (R3 commit)

@@ -43,6 +43,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            // App commands
+            commands::app::exit_app,
             // Audio commands
             commands::audio::list_audio_devices,
             commands::audio::start_audio_stream,
@@ -64,6 +66,7 @@ pub fn run() {
             commands::radio::set_mode,
             commands::radio::get_signal_strength,
             commands::radio::get_radio_state,
+            commands::radio::get_tx_power,
             // TX commands
             commands::tx::start_tx,
             commands::tx::stop_tx,
@@ -72,6 +75,7 @@ pub fn run() {
             commands::config::load_configuration,
             commands::config::list_configurations,
             commands::config::delete_configuration,
+            commands::config::set_tx_power_config,
             // Status command
             commands::status::get_connection_status,
         ])
