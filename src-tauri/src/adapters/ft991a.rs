@@ -433,4 +433,115 @@ mod tests {
             "no bytes should reach the wire for out-of-range power"
         );
     }
+
+    // --- is_amateur_frequency: exact band edges ---
+
+    #[test]
+    fn is_amateur_frequency_exact_band_edges() {
+        // Each band: lower edge, upper edge, one below, one above
+        let cases: &[(u64, bool)] = &[
+            (1_800_000, true),   // 160m lower
+            (2_000_000, true),   // 160m upper
+            (1_799_999, false),  // just below 160m
+            (2_000_001, false),  // just above 160m
+            (3_500_000, true),   // 80m lower
+            (4_000_000, true),   // 80m upper
+            (3_499_999, false),
+            (4_000_001, false),
+            (5_332_000, true),   // 60m lower
+            (5_405_000, true),   // 60m upper
+            (5_331_999, false),
+            (5_405_001, false),
+            (7_000_000, true),   // 40m lower
+            (7_300_000, true),   // 40m upper
+            (10_100_000, true),  // 30m lower
+            (10_150_000, true),  // 30m upper
+            (14_000_000, true),  // 20m lower
+            (14_350_000, true),  // 20m upper
+            (18_068_000, true),  // 17m lower
+            (18_168_000, true),  // 17m upper
+            (21_000_000, true),  // 15m lower
+            (21_450_000, true),  // 15m upper
+            (24_890_000, true),  // 12m lower
+            (24_990_000, true),  // 12m upper
+            (28_000_000, true),  // 10m lower
+            (29_700_000, true),  // 10m upper
+            (50_000_000, true),  // 6m lower
+            (54_000_000, true),  // 6m upper
+            (144_000_000, true), // 2m lower
+            (148_000_000, true), // 2m upper
+            (420_000_000, true), // 70cm lower
+            (450_000_000, true), // 70cm upper
+            (450_000_001, false),// above 70cm
+            (10_000_000, false), // gap between 30m and 20m
+            (0, false),          // DC
+        ];
+        for &(hz, expected) in cases {
+            assert_eq!(
+                is_amateur_frequency(hz),
+                expected,
+                "is_amateur_frequency({hz}) should be {expected}"
+            );
+        }
+    }
+
+    // --- band_select_code: every band arm and the fallback ---
+
+    #[test]
+    fn band_select_code_all_bands() {
+        let cases: &[(u64, u8)] = &[
+            (1_800_000, 0),     // 160m
+            (3_500_000, 1),     // 80m
+            (5_332_000, 2),     // 60m
+            (7_000_000, 3),     // 40m
+            (10_100_000, 4),    // 30m
+            (14_000_000, 5),    // 20m
+            (18_068_000, 6),    // 17m
+            (21_000_000, 7),    // 15m
+            (24_890_000, 8),    // 12m
+            (28_000_000, 9),    // 10m
+            (50_000_000, 10),   // 6m
+            (144_000_000, 12),  // 2m
+            (420_000_000, 13),  // 70cm
+            (10_000_000, 5),    // gap → fallback to 20m (code 5)
+        ];
+        for &(hz, expected) in cases {
+            assert_eq!(
+                band_select_code(hz),
+                expected,
+                "band_select_code({hz}) should be {expected}"
+            );
+        }
+    }
+
+    // --- set_frequency covers every band via BS; code ---
+
+    #[test]
+    fn set_frequency_all_bands_send_correct_bs_code() {
+        // Sample one frequency from every band and verify the BS; wire prefix
+        let cases: &[(f64, &str)] = &[
+            (1_900_000.0, "BS00;"),
+            (3_600_000.0, "BS01;"),
+            (5_358_500.0, "BS02;"),
+            (7_035_000.0, "BS03;"),
+            (10_120_000.0, "BS04;"),
+            (14_070_000.0, "BS05;"),
+            (18_100_000.0, "BS06;"),
+            (21_070_000.0, "BS07;"),
+            (24_920_000.0, "BS08;"),
+            (28_120_000.0, "BS09;"),
+            (50_313_000.0, "BS10;"),
+            (144_200_000.0, "BS12;"),
+            (432_100_000.0, "BS13;"),
+        ];
+        for &(hz, expected_bs) in cases {
+            let (mut radio, log) = make_radio(";");
+            radio.set_frequency(Frequency::hz(hz)).unwrap();
+            let cmds = log.lock().unwrap();
+            assert_eq!(
+                cmds[0], expected_bs,
+                "set_frequency({hz}) should send {expected_bs}"
+            );
+        }
+    }
 }

@@ -43,11 +43,9 @@ fn sanitize_name(name: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
-/// Write a Configuration to disk without re-checking the name (caller is responsible).
-/// Extracted so set_tx_power_config can reuse it without duplicating I/O logic.
-fn write_config_to_disk(app: &AppHandle, config: &Configuration) -> Result<(), String> {
+/// Write a Configuration to a directory (path-based, testable without AppHandle).
+fn write_config_to_dir(dir: &std::path::Path, config: &Configuration) -> Result<(), String> {
     let name = sanitize_name(&config.name)?;
-    let dir = config_dir(app)?;
     let path = dir.join(format!("{name}.json"));
     let json =
         serde_json::to_string_pretty(config).map_err(|e| format!("Serialization error: {e}"))?;
@@ -55,9 +53,55 @@ fn write_config_to_disk(app: &AppHandle, config: &Configuration) -> Result<(), S
     Ok(())
 }
 
+/// Write a Configuration to disk without re-checking the name (caller is responsible).
+/// Extracted so set_tx_power_config can reuse it without duplicating I/O logic.
+fn write_config_to_disk(app: &AppHandle, config: &Configuration) -> Result<(), String> {
+    let dir = config_dir(app)?;
+    write_config_to_dir(&dir, config)
+}
+
 #[tauri::command]
 pub fn save_configuration(app: AppHandle, config: Configuration) -> Result<(), String> {
     write_config_to_disk(&app, &config)
+}
+
+fn load_config_from_dir(dir: &std::path::Path, name: &str) -> Result<Configuration, String> {
+    let name = sanitize_name(name)?;
+    let path = dir.join(format!("{name}.json"));
+    let json = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read config '{name}': {e}"))?;
+    serde_json::from_str(&json).map_err(|e| format!("Failed to parse config '{name}': {e}"))
+}
+
+fn list_configs_in_dir(dir: &std::path::Path) -> Result<Vec<String>, String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .map_err(|e| format!("Failed to read configs dir: {e}"))?
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            if path.extension()?.to_str()? != "json" {
+                return None;
+            }
+            let name = path.file_stem()?.to_string_lossy().into_owned();
+            match sanitize_name(&name) {
+                Ok(sanitized) if sanitized == name => Some(name),
+                _ => None,
+            }
+        })
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
+fn delete_config_from_dir(dir: &std::path::Path, name: &str) -> Result<(), String> {
+    let name = sanitize_name(name)?;
+    if name == "Default" {
+        return Err("Cannot delete the Default configuration".to_string());
+    }
+    let path = dir.join(format!("{name}.json"));
+    if !path.exists() {
+        return Err(format!("Configuration '{name}' not found"));
+    }
+    std::fs::remove_file(&path).map_err(|e| format!("Failed to delete config '{name}': {e}"))
 }
 
 /// Validate a TX power value (0–100 W inclusive).
@@ -96,18 +140,12 @@ pub fn set_tx_power_config(
     // Persist: load current profile from disk, patch tx_power_watts, save back.
     // This is best-effort — if no profile file exists yet, skip silently.
     let name = "Default";
-    let dir = match config_dir(&app) {
-        Ok(d) => d,
-        Err(e) => return Err(e),
-    };
+    let dir = config_dir(&app)?;
     let path = dir.join(format!("{name}.json"));
     if path.exists() {
-        let json = std::fs::read_to_string(&path)
-            .map_err(|e| format!("Failed to read config '{name}': {e}"))?;
-        let mut profile: Configuration = serde_json::from_str(&json)
-            .map_err(|e| format!("Failed to parse config '{name}': {e}"))?;
+        let mut profile = load_config_from_dir(&dir, name)?;
         profile.tx_power_watts = watts;
-        write_config_to_disk(&app, &profile)?;
+        write_config_to_dir(&dir, &profile)?;
     }
 
     Ok(())
@@ -115,48 +153,20 @@ pub fn set_tx_power_config(
 
 #[tauri::command]
 pub fn load_configuration(app: AppHandle, name: String) -> Result<Configuration, String> {
-    let name = sanitize_name(&name)?;
     let dir = config_dir(&app)?;
-    let path = dir.join(format!("{name}.json"));
-    let json = std::fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read config '{name}': {e}"))?;
-    serde_json::from_str(&json).map_err(|e| format!("Failed to parse config '{name}': {e}"))
+    load_config_from_dir(&dir, &name)
 }
 
 #[tauri::command]
 pub fn list_configurations(app: AppHandle) -> Result<Vec<String>, String> {
     let dir = config_dir(&app)?;
-    let mut names: Vec<String> = std::fs::read_dir(&dir)
-        .map_err(|e| format!("Failed to read configs dir: {e}"))?
-        .filter_map(|entry| {
-            let path = entry.ok()?.path();
-            if path.extension()?.to_str()? != "json" {
-                return None;
-            }
-            let name = path.file_stem()?.to_string_lossy().into_owned();
-            // Skip any file whose name wouldn't survive sanitization
-            match sanitize_name(&name) {
-                Ok(sanitized) if sanitized == name => Some(name),
-                _ => None,
-            }
-        })
-        .collect();
-    names.sort();
-    Ok(names)
+    list_configs_in_dir(&dir)
 }
 
 #[tauri::command]
 pub fn delete_configuration(app: AppHandle, name: String) -> Result<(), String> {
-    let name = sanitize_name(&name)?;
-    if name == "Default" {
-        return Err("Cannot delete the Default configuration".to_string());
-    }
     let dir = config_dir(&app)?;
-    let path = dir.join(format!("{name}.json"));
-    if !path.exists() {
-        return Err(format!("Configuration '{name}' not found"));
-    }
-    std::fs::remove_file(&path).map_err(|e| format!("Failed to delete config '{name}': {e}"))
+    delete_config_from_dir(&dir, &name)
 }
 
 #[cfg(test)]
@@ -213,5 +223,70 @@ mod tests {
         assert_eq!(cfg.tx_power_watts, 10);
         cfg.tx_power_watts = 0;
         assert_eq!(cfg.tx_power_watts, 0);
+    }
+
+    // --- I/O path tests using temp directories ---
+
+    fn sample_config(name: &str) -> Configuration {
+        Configuration { name: name.to_string(), ..Configuration::default() }
+    }
+
+    #[test]
+    fn write_and_load_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = sample_config("Default");
+        write_config_to_dir(dir.path(), &config).unwrap();
+        let loaded = load_config_from_dir(dir.path(), "Default").unwrap();
+        assert_eq!(loaded.name, "Default");
+        assert_eq!(loaded.carrier_freq, 1000.0);
+    }
+
+    #[test]
+    fn list_returns_saved_names_sorted() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config_to_dir(dir.path(), &sample_config("Zeta")).unwrap();
+        write_config_to_dir(dir.path(), &sample_config("Alpha")).unwrap();
+        write_config_to_dir(dir.path(), &sample_config("Default")).unwrap();
+        let names = list_configs_in_dir(dir.path()).unwrap();
+        assert_eq!(names, vec!["Alpha", "Default", "Zeta"]);
+    }
+
+    #[test]
+    fn list_ignores_non_json_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "ignore me").unwrap();
+        write_config_to_dir(dir.path(), &sample_config("Default")).unwrap();
+        let names = list_configs_in_dir(dir.path()).unwrap();
+        assert_eq!(names, vec!["Default"]);
+    }
+
+    #[test]
+    fn delete_removes_config() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config_to_dir(dir.path(), &sample_config("Temp")).unwrap();
+        delete_config_from_dir(dir.path(), "Temp").unwrap();
+        assert!(load_config_from_dir(dir.path(), "Temp").is_err());
+    }
+
+    #[test]
+    fn delete_default_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config_to_dir(dir.path(), &sample_config("Default")).unwrap();
+        let err = delete_config_from_dir(dir.path(), "Default").unwrap_err();
+        assert!(err.contains("Cannot delete the Default"));
+    }
+
+    #[test]
+    fn load_nonexistent_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = load_config_from_dir(dir.path(), "Ghost").unwrap_err();
+        assert!(err.contains("Failed to read config"));
+    }
+
+    #[test]
+    fn delete_nonexistent_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = delete_config_from_dir(dir.path(), "Ghost").unwrap_err();
+        assert!(err.contains("not found"));
     }
 }

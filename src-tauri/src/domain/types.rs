@@ -122,3 +122,129 @@ pub struct RadioInfo {
     pub mode: String,
     pub connected: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- Frequency constructors ---
+
+    #[test]
+    fn frequency_hz_constructor() {
+        assert_eq!(Frequency::hz(14_070_000.0).as_hz(), 14_070_000.0);
+    }
+
+    #[test]
+    fn frequency_khz_constructor() {
+        assert_eq!(Frequency::khz(14_070.0).as_hz(), 14_070_000.0);
+    }
+
+    #[test]
+    fn frequency_mhz_constructor() {
+        assert_eq!(Frequency::mhz(14.070).as_hz(), 14_070_000.0);
+    }
+
+    #[test]
+    fn frequency_equality() {
+        assert_eq!(Frequency::khz(7035.0), Frequency::hz(7_035_000.0));
+        assert_ne!(Frequency::hz(7_035_000.0), Frequency::hz(7_035_001.0));
+    }
+
+    // --- ModemConfig defaults ---
+
+    #[test]
+    fn modem_config_default_values() {
+        let cfg = ModemConfig::default();
+        assert_eq!(cfg.sample_rate, 48000);
+        assert_eq!(cfg.carrier_freq, 1000.0);
+        assert_eq!(cfg.fft_size, 4096);
+        assert_eq!(cfg.tx_power_watts, 25);
+    }
+
+    #[test]
+    fn modem_config_serde_default_tx_power() {
+        // tx_power_watts has serde(default) — omitting it in JSON should produce 25
+        let json = r#"{"sample_rate":48000,"carrier_freq":1000.0,"fft_size":4096}"#;
+        let cfg: ModemConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.tx_power_watts, 25);
+    }
+
+    // --- ModemStatus defaults ---
+
+    #[test]
+    fn modem_status_default_values() {
+        let status = ModemStatus::default();
+        assert!(!status.rx_running);
+        assert!(!status.tx_running);
+        assert_eq!(status.carrier_freq_hz, 1000.0);
+        assert_eq!(status.signal_level, 0.0);
+    }
+
+    // --- RadioStatus serialization and equality ---
+
+    #[test]
+    fn radio_status_partial_eq() {
+        let a = RadioStatus {
+            frequency_hz: 14_070_000,
+            mode: "USB".into(),
+            is_transmitting: false,
+            rit_offset_hz: 0,
+            rit_enabled: false,
+            split: false,
+        };
+        let b = a.clone();
+        assert_eq!(a, b);
+
+        let c = RadioStatus { frequency_hz: 7_035_000, ..a.clone() };
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn radio_status_serializes_to_camel_case() {
+        let s = RadioStatus {
+            frequency_hz: 14_070_000,
+            mode: "USB".into(),
+            is_transmitting: false,
+            rit_offset_hz: 0,
+            rit_enabled: false,
+            split: false,
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("frequencyHz"), "expected camelCase frequencyHz");
+        assert!(json.contains("isTransmitting"), "expected camelCase isTransmitting");
+    }
+
+    // --- RadioInfo serialization ---
+
+    #[test]
+    fn radio_info_serializes_to_camel_case() {
+        let info = RadioInfo {
+            port: "/dev/tty.usbserial".into(),
+            baud_rate: 38400,
+            frequency_hz: 14_070_000.0,
+            mode: "USB".into(),
+            connected: true,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("frequencyHz"), "expected camelCase frequencyHz");
+        assert!(json.contains("baudRate"), "expected camelCase baudRate");
+    }
+
+    // --- AudioDeviceInfo serialization ---
+
+    #[test]
+    fn audio_device_info_serializes_to_camel_case() {
+        let dev = AudioDeviceInfo {
+            id: "device-1".into(),
+            name: "USB Audio".into(),
+            is_input: true,
+            is_output: false,
+            is_default: true,
+            output_unverified: false,
+        };
+        let json = serde_json::to_string(&dev).unwrap();
+        assert!(json.contains("isInput"), "expected camelCase isInput");
+        assert!(json.contains("isDefault"), "expected camelCase isDefault");
+        assert!(json.contains("outputUnverified"), "expected camelCase outputUnverified");
+    }
+}

@@ -286,6 +286,96 @@ mod tests {
         }
     }
 
+    // --- Timeout and error paths in read_until_semicolon ---
+
+    /// A MockSerial that always returns Ok(0) — simulates a radio that never responds.
+    struct SilentMockSerial;
+
+    impl SerialConnection for SilentMockSerial {
+        fn write(&mut self, _data: &[u8]) -> Psk31Result<usize> { Ok(0) }
+        fn read(&mut self, _buf: &mut [u8]) -> Psk31Result<usize> { Ok(0) }
+        fn close(&mut self) -> Psk31Result<()> { Ok(()) }
+        fn is_connected(&self) -> bool { true }
+    }
+
+    #[test]
+    fn all_reads_timeout_returns_no_response_error() {
+        let mut session = CatSession::new(Box::new(SilentMockSerial));
+        let result = session.execute(&CatCommand::GetFrequencyA);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("no response"), "expected 'no response' in: {err}");
+    }
+
+    /// A MockSerial that returns Err on every read — simulates transient I/O errors.
+    struct ErroringMockSerial {
+        response_after: Vec<u8>,
+        error_count: usize,
+        calls: usize,
+        cursor: usize,
+    }
+
+    impl SerialConnection for ErroringMockSerial {
+        fn write(&mut self, _data: &[u8]) -> Psk31Result<usize> { Ok(0) }
+        fn read(&mut self, buf: &mut [u8]) -> Psk31Result<usize> {
+            self.calls += 1;
+            if self.calls <= self.error_count {
+                return Err(Psk31Error::Serial("transient error".into()));
+            }
+            if self.cursor >= self.response_after.len() {
+                return Ok(0);
+            }
+            buf[0] = self.response_after[self.cursor];
+            self.cursor += 1;
+            Ok(1)
+        }
+        fn close(&mut self) -> Psk31Result<()> { Ok(()) }
+        fn is_connected(&self) -> bool { true }
+    }
+
+    #[test]
+    fn transient_read_errors_retry_and_succeed() {
+        // First 3 reads return Err, then the real response arrives byte-by-byte.
+        let serial = ErroringMockSerial {
+            response_after: b"FA00014070000;".to_vec(),
+            error_count: 3,
+            calls: 0,
+            cursor: 0,
+        };
+        let mut session = CatSession::new(Box::new(serial));
+        let result = session.execute(&CatCommand::GetFrequencyA);
+        assert!(result.is_ok(), "expected success after transient errors: {result:?}");
+    }
+
+    // --- execute_write_only ---
+
+    #[test]
+    fn execute_write_only_sends_wire_bytes() {
+        let (mut session, log) = make_session("");
+        session.execute_write_only(&CatCommand::BandSelect(3)).unwrap();
+        assert_eq!(log.lock().unwrap()[0], "BS03;");
+    }
+
+    /// A MockSerial whose write() always fails.
+    struct FailingWriteMockSerial;
+
+    impl SerialConnection for FailingWriteMockSerial {
+        fn write(&mut self, _data: &[u8]) -> Psk31Result<usize> {
+            Err(Psk31Error::Serial("write failed".into()))
+        }
+        fn read(&mut self, _buf: &mut [u8]) -> Psk31Result<usize> { Ok(0) }
+        fn close(&mut self) -> Psk31Result<()> { Ok(()) }
+        fn is_connected(&self) -> bool { true }
+    }
+
+    #[test]
+    fn execute_write_only_propagates_write_error() {
+        let mut session = CatSession::new(Box::new(FailingWriteMockSerial));
+        let result = session.execute_write_only(&CatCommand::BandSelect(5));
+        assert!(result.is_err(), "expected Err when write fails");
+    }
+
+    // --- Long response regression ---
+
     #[test]
     fn long_response_read_across_multiple_chunks() {
         // Regression: the old code used a fixed [u8; 64] accumulation buffer, so any

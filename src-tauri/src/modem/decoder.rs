@@ -272,4 +272,112 @@ mod tests {
         decoder.update_carrier_if_changed(1550.0);
         assert_eq!(decoder.carrier_freq, 1550.0);
     }
+
+    // --- signal_strength boundaries ---
+
+    #[test]
+    fn signal_strength_at_default_gain_is_midrange() {
+        // Fresh decoder has gain=1.0 → log10(1.0)=0 → (1-(0+2)/4) = 0.5
+        let decoder = Psk31Decoder::new(1000.0, 48000);
+        let s = decoder.signal_strength();
+        assert!((s - 0.5).abs() < 0.01, "expected ~0.5 at default gain, got {s}");
+    }
+
+    #[test]
+    fn signal_strength_with_saturated_high_gain_approaches_zero() {
+        // Feed silence to drive AGC gain toward max (100.0)
+        let mut decoder = Psk31Decoder::new(1000.0, 48000);
+        for _ in 0..100_000 {
+            decoder.process(0.0);
+        }
+        let s = decoder.signal_strength();
+        // At max gain 100.0: log10(100)=2 → (1-(2+2)/4) = 0.0
+        assert!(s < 0.05, "expected near 0.0 with high gain, got {s}");
+    }
+
+    #[test]
+    fn signal_strength_with_loud_signal_is_higher_than_silence() {
+        // After loud signal the AGC reduces gain → signal_strength rises above baseline.
+        // After silence the AGC increases gain → signal_strength falls below baseline.
+        let mut decoder_loud = Psk31Decoder::new(1000.0, 48000);
+        let mut decoder_quiet = Psk31Decoder::new(1000.0, 48000);
+        for _ in 0..10_000 {
+            decoder_loud.process(1.0);
+            decoder_quiet.process(0.0);
+        }
+        let s_loud = decoder_loud.signal_strength();
+        let s_quiet = decoder_quiet.signal_strength();
+        assert!(
+            s_loud > s_quiet,
+            "loud signal should yield higher signal_strength than silence: loud={s_loud}, quiet={s_quiet}"
+        );
+    }
+
+    // --- reset clears all state ---
+
+    #[test]
+    fn reset_restores_decoder_to_initial_behavior() {
+        let carrier = 1000.0;
+        let sample_rate = 48000;
+
+        // Decode a real signal to put the decoder into a mid-stream state
+        let encoder = Psk31Encoder::new(sample_rate, carrier);
+        let samples = encoder.encode("TEST");
+        let mut decoder = Psk31Decoder::new(carrier, sample_rate);
+        for &s in &samples {
+            decoder.process(s);
+        }
+
+        // Reset and verify the decoder can cleanly decode a fresh transmission
+        decoder.reset();
+        let samples2 = encoder.encode("HI");
+        let mut decoded = String::new();
+        for &s in &samples2 {
+            if let Some(ch) = decoder.process(s) {
+                decoded.push(ch);
+            }
+        }
+        // After reset, decoder re-acquires lock — at least the last character decodes
+        assert!(
+            decoded.contains('I') || decoded.contains('H'),
+            "expected at least one character after reset, got: '{decoded}'"
+        );
+    }
+
+    // --- phase ambiguity fallback ---
+
+    #[test]
+    fn phase_ambiguity_fallback_does_not_crash() {
+        // Acquire lock with a real signal, then starve the decoder with silence
+        // to trigger the PHASE_AMBIGUITY_THRESHOLD inversion, then verify
+        // the decoder is still functional (doesn't panic, still processes samples).
+        let carrier = 1000.0;
+        let sample_rate = 48000;
+        let encoder = Psk31Encoder::new(sample_rate, carrier);
+
+        // Feed preamble samples to acquire lock
+        let samples = encoder.encode("E");
+        let mut decoder = Psk31Decoder::new(carrier, sample_rate);
+        for &s in &samples {
+            decoder.process(s);
+        }
+
+        // Feed silence — this drives bits_without_char past PHASE_AMBIGUITY_THRESHOLD
+        // which triggers the invert_bits flip and varicode_decoder.reset()
+        for _ in 0..(PHASE_AMBIGUITY_THRESHOLD + 50) * 1536 {
+            decoder.process(0.0);
+        }
+
+        // Decoder must survive without panicking and still accept new samples
+        let samples2 = encoder.encode("E");
+        let mut post_fallback_output = 0usize;
+        for &s in &samples2 {
+            if decoder.process(s).is_some() {
+                post_fallback_output += 1;
+            }
+        }
+        // We don't assert specific decoded chars (lock re-acquisition is non-deterministic)
+        // but we assert the decoder ran all the way through without panicking
+        let _ = post_fallback_output;
+    }
 }

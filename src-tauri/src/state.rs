@@ -53,3 +53,50 @@ impl Default for AppState {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn app_state_default_equals_new() {
+        let a = AppState::new();
+        let b = AppState::default();
+        // Both start with audio_running = false
+        assert!(!a.audio_running.load(Ordering::Relaxed));
+        assert!(!b.audio_running.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn app_state_initial_flags_are_false() {
+        let state = AppState::new();
+        assert!(!state.audio_running.load(Ordering::Relaxed));
+        assert!(!state.tx_abort.load(Ordering::Relaxed));
+        assert!(!state.rx_running.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn app_state_rx_carrier_freq_default_is_1000() {
+        let state = AppState::new();
+        assert_eq!(*state.rx_carrier_freq.lock().unwrap(), 1000.0);
+    }
+
+    #[test]
+    fn app_state_audio_device_name_starts_none() {
+        let state = AppState::new();
+        assert!(state.audio_device_name.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn app_state_serial_port_name_starts_none() {
+        let state = AppState::new();
+        assert!(state.serial_port_name.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn app_state_radio_starts_none() {
+        let state = AppState::new();
+        assert!(state.radio.lock().unwrap().is_none());
+    }
+}
