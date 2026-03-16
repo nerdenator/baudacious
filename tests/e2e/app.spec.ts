@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 import { mockInvoke, dismissStartupDialog } from './helpers';
 
 /** Base mocks used by tests that need Tauri IPC but don't care about serial/audio */

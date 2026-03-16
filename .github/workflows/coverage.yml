@@ -1,0 +1,107 @@
+name: Test Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust-coverage:
+    name: Rust — Unit Test Coverage
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: src-tauri
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libasound2-dev \
+            libudev-dev \
+            pkg-config
+
+      - name: Install Rust stable with llvm-tools
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Run unit tests with coverage
+        run: cargo llvm-cov --lib --lcov --output-path lcov.info
+
+      - name: Generate text summary
+        run: cargo llvm-cov report --text 2>&1 | tee ../coverage-rust.txt
+
+      - name: Post summary
+        working-directory: .
+        run: |
+          echo "## Rust Unit Test Coverage" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat coverage-rust.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload lcov report
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-coverage-lcov
+          path: src-tauri/lcov.info
+
+  frontend-coverage:
+    name: Frontend — E2E Coverage
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install webkit --with-deps
+
+      - name: Run Playwright tests with coverage instrumentation
+        run: |
+          if find tests/e2e -name "*-webkit-linux.png" | grep -q .; then
+            npx playwright test
+          else
+            npx playwright test --update-snapshots
+          fi
+        env:
+          CI: true
+          VITE_COVERAGE: "true"
+
+      - name: Generate coverage report
+        run: npx nyc report 2>&1 | tee coverage-frontend.txt
+
+      - name: Post summary
+        run: |
+          echo "## Frontend E2E Coverage" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat coverage-frontend.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload lcov report
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage-lcov
+          path: coverage/frontend/lcov.info
