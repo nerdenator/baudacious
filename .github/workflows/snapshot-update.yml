@@ -10,6 +10,9 @@ on:
         required: true
         default: main
 
+permissions:
+  contents: write
+
 jobs:
   update-snapshots:
     name: Regenerate Linux WebKit snapshots
