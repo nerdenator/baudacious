@@ -63,12 +63,16 @@ jobs:
             PR_BRANCH="chore/snapshots-${{ github.run_id }}"
             git checkout -b "$PR_BRANCH"
             git commit -m "chore: update Playwright snapshots for Linux WebKit"
-            git push origin "$PR_BRANCH"
-            gh pr create \
-              --base "$TARGET" \
-              --head "$PR_BRANCH" \
-              --title "chore: update Playwright snapshots for Linux WebKit" \
-              --body "Automated snapshot regeneration triggered by workflow run ${{ github.run_id }}."
+            git push --force origin "$PR_BRANCH"
+            if gh pr view "$PR_BRANCH" --json number -q .number 2>/dev/null; then
+              echo "PR already exists for $PR_BRANCH — skipping create."
+            else
+              gh pr create \
+                --base "$TARGET" \
+                --head "$PR_BRANCH" \
+                --title "chore: update Playwright snapshots for Linux WebKit" \
+                --body "Automated snapshot regeneration triggered by workflow run ${{ github.run_id }}."
+            fi
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
