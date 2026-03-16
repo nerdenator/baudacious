@@ -59,6 +59,19 @@ fn ensure_data_mode(radio: &mut dyn RadioControl) {
     }
 }
 
+/// Pure validation for `start_tx` / `start_tune` — no I/O, fully unit-testable.
+///
+/// Arguments:
+/// - `is_transmitting`: `true` when a tx/tune thread is already running
+///
+/// Returns `Err` with a human-readable message when TX should be blocked.
+pub(crate) fn validate_tx_start(is_transmitting: bool) -> Result<(), String> {
+    if is_transmitting {
+        return Err("Already transmitting".into());
+    }
+    Ok(())
+}
+
 /// Payload for `tx-status` events sent to the frontend
 #[derive(Clone, Serialize)]
 struct TxStatusPayload {
@@ -428,5 +441,202 @@ fn run_tx_thread(
         }
 
         thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{Frequency, Psk31Error, Psk31Result, RadioStatus};
+    use crate::ports::RadioControl;
+
+    // -----------------------------------------------------------------------
+    // validate_tx_start
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn validate_tx_start_ok_when_not_transmitting() {
+        assert!(validate_tx_start(false).is_ok());
+    }
+
+    #[test]
+    fn validate_tx_start_err_when_already_transmitting() {
+        let err = validate_tx_start(true).unwrap_err();
+        assert_eq!(err, "Already transmitting");
+    }
+
+    // -----------------------------------------------------------------------
+    // ensure_data_mode — uses an inline configurable mock
+    // -----------------------------------------------------------------------
+
+    /// Controls what the mock radio returns for get_frequency / get_mode /
+    /// set_mode so we can exercise every branch of ensure_data_mode.
+    struct ModeMock {
+        freq_hz: f64,
+        current_mode: String,
+        /// If Some, get_frequency() returns this error instead of freq_hz
+        freq_err: Option<String>,
+        /// If Some, get_mode() returns this error instead of current_mode
+        mode_err: Option<String>,
+        /// If Some, set_mode() returns this error
+        set_mode_err: Option<String>,
+        /// Records the last mode passed to set_mode()
+        set_mode_called_with: Option<String>,
+    }
+
+    impl ModeMock {
+        /// Radio on 20m in the correct DATA-USB mode already
+        fn correct_mode() -> Self {
+            Self {
+                freq_hz: 14_070_000.0,
+                current_mode: "DATA-USB".to_string(),
+                freq_err: None,
+                mode_err: None,
+                set_mode_err: None,
+                set_mode_called_with: None,
+            }
+        }
+
+        /// Radio on 20m but in plain USB — needs correction to DATA-USB
+        fn wrong_mode() -> Self {
+            Self {
+                freq_hz: 14_070_000.0,
+                current_mode: "USB".to_string(),
+                freq_err: None,
+                mode_err: None,
+                set_mode_err: None,
+                set_mode_called_with: None,
+            }
+        }
+
+        /// get_frequency() will fail
+        fn freq_error() -> Self {
+            Self {
+                freq_hz: 0.0,
+                current_mode: "USB".to_string(),
+                freq_err: Some("read failed".to_string()),
+                mode_err: None,
+                set_mode_err: None,
+                set_mode_called_with: None,
+            }
+        }
+
+        /// get_mode() will fail
+        fn mode_read_error() -> Self {
+            Self {
+                freq_hz: 14_070_000.0,
+                current_mode: "USB".to_string(),
+                freq_err: None,
+                mode_err: Some("mode read failed".to_string()),
+                set_mode_err: None,
+                set_mode_called_with: None,
+            }
+        }
+
+        /// set_mode() will fail
+        fn set_mode_error() -> Self {
+            Self {
+                freq_hz: 14_070_000.0,
+                current_mode: "USB".to_string(),
+                freq_err: None,
+                mode_err: None,
+                set_mode_err: Some("set failed".to_string()),
+                set_mode_called_with: None,
+            }
+        }
+    }
+
+    impl RadioControl for ModeMock {
+        fn ptt_on(&mut self) -> Psk31Result<()> { Ok(()) }
+        fn ptt_off(&mut self) -> Psk31Result<()> { Ok(()) }
+        fn is_transmitting(&self) -> bool { false }
+        fn get_frequency(&mut self) -> Psk31Result<Frequency> {
+            if let Some(ref e) = self.freq_err {
+                return Err(Psk31Error::Serial(e.clone()));
+            }
+            Ok(Frequency::hz(self.freq_hz))
+        }
+        fn set_frequency(&mut self, _freq: Frequency) -> Psk31Result<()> { Ok(()) }
+        fn get_mode(&mut self) -> Psk31Result<String> {
+            if let Some(ref e) = self.mode_err {
+                return Err(Psk31Error::Cat(e.clone()));
+            }
+            Ok(self.current_mode.clone())
+        }
+        fn set_mode(&mut self, mode: &str) -> Psk31Result<()> {
+            self.set_mode_called_with = Some(mode.to_string());
+            if let Some(ref e) = self.set_mode_err {
+                return Err(Psk31Error::Cat(e.clone()));
+            }
+            self.current_mode = mode.to_string();
+            Ok(())
+        }
+        fn get_tx_power(&mut self) -> Psk31Result<u32> { Ok(25) }
+        fn set_tx_power(&mut self, _watts: u32) -> Psk31Result<()> { Ok(()) }
+        fn get_signal_strength(&mut self) -> Psk31Result<f32> { Ok(0.0) }
+        fn get_status(&mut self) -> Psk31Result<RadioStatus> {
+            Ok(RadioStatus {
+                frequency_hz: self.freq_hz as u64,
+                mode: self.current_mode.clone(),
+                is_transmitting: false,
+                rit_offset_hz: 0,
+                rit_enabled: false,
+                split: false,
+            })
+        }
+    }
+
+    #[test]
+    fn ensure_data_mode_noop_when_already_correct() {
+        let mut mock = ModeMock::correct_mode();
+        ensure_data_mode(&mut mock);
+        // set_mode should NOT have been called
+        assert!(mock.set_mode_called_with.is_none());
+    }
+
+    #[test]
+    fn ensure_data_mode_corrects_wrong_mode() {
+        let mut mock = ModeMock::wrong_mode();
+        ensure_data_mode(&mut mock);
+        assert_eq!(mock.set_mode_called_with.as_deref(), Some("DATA-USB"));
+    }
+
+    #[test]
+    fn ensure_data_mode_skips_on_freq_read_error() {
+        // Non-fatal — should return without panicking and without calling set_mode
+        let mut mock = ModeMock::freq_error();
+        ensure_data_mode(&mut mock);
+        assert!(mock.set_mode_called_with.is_none());
+    }
+
+    #[test]
+    fn ensure_data_mode_skips_on_mode_read_error() {
+        let mut mock = ModeMock::mode_read_error();
+        ensure_data_mode(&mut mock);
+        assert!(mock.set_mode_called_with.is_none());
+    }
+
+    #[test]
+    fn ensure_data_mode_tolerates_set_mode_failure() {
+        // set_mode fails — ensure_data_mode should return without panicking
+        let mut mock = ModeMock::set_mode_error();
+        ensure_data_mode(&mut mock); // must not panic
+        // set_mode was attempted
+        assert_eq!(mock.set_mode_called_with.as_deref(), Some("DATA-USB"));
+    }
+
+    #[test]
+    fn ensure_data_mode_lsb_below_10mhz() {
+        // 40m — expects DATA-LSB
+        let mut mock = ModeMock {
+            freq_hz: 7_074_000.0,
+            current_mode: "USB".to_string(),
+            freq_err: None,
+            mode_err: None,
+            set_mode_err: None,
+            set_mode_called_with: None,
+        };
+        ensure_data_mode(&mut mock);
+        assert_eq!(mock.set_mode_called_with.as_deref(), Some("DATA-LSB"));
     }
 }
