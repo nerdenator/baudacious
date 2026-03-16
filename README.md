@@ -1,4 +1,4 @@
-# PSK-31 Desktop Client
+# Baudacious
 
 Cross-platform desktop application for PSK-31 ham radio keyboard-to-keyboard communication.
 
