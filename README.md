@@ -2,16 +2,19 @@
 
 Cross-platform desktop application for PSK-31 ham radio keyboard-to-keyboard communication.
 
-## Features (implemented)
+## Features
 
 - Spectral waterfall display with click-to-tune (live FFT from audio input)
+- Adjustable waterfall palette (classic/heat/viridis/grayscale), zoom, and noise floor
 - Audio device enumeration and selection (input + output)
 - CAT serial control for Yaesu FT-991A (connect, frequency, mode, PTT)
-- TX text input with character counter and transmit/abort controls (UI ready, encoding in Phase 4)
-- RX decoded text display with clear button
-- Configuration profiles (save/load/delete)
+- Band selector with per-band PSK-31 calling frequency defaults (160m–10m)
+- PSK-31 TX: text input with character counter, transmit/abort, automatic PTT
+- PSK-31 RX: Costas loop demodulator, Varicode decoder, decoded text display
+- Configuration profiles (save/load/delete) with persistence across sessions
 - Native menu bar (File, View, Help)
 - Light/dark theme with localStorage persistence
+- Toast notifications for connection events and errors
 
 ## Requirements
 
@@ -27,7 +30,7 @@ Cross-platform desktop application for PSK-31 ham radio keyboard-to-keyboard com
 ### Runtime
 
 - USB audio interface (radio or SignaLink)
-- Serial port for CAT control (optional)
+- Serial port for CAT control (optional — audio-only TX/RX works without it)
 
 ## Getting Started
 
@@ -45,10 +48,10 @@ npm run tauri build
 ## Testing
 
 ```bash
-# Rust unit tests (26 passing, 1 pre-existing failure in varicode roundtrip)
+# Rust unit tests (56 passing) + integration tests (5 passing)
 cd src-tauri && cargo test
 
-# Playwright E2E tests (27 passing)
+# Playwright E2E tests (50 passing)
 npm test
 
 # Update visual regression snapshots after UI changes
@@ -99,7 +102,7 @@ src/
 ## Project Structure
 
 ```
-psk31_client_workspace/
+baudacious/
 ├── src/                    # Frontend (TypeScript)
 │   ├── components/         # UI components
 │   ├── services/           # Backend API, event bridges
@@ -116,8 +119,7 @@ psk31_client_workspace/
 │   │   └── commands/       # Tauri IPC handlers
 │   └── Cargo.toml
 ├── tests/e2e/              # Playwright E2E tests
-├── PLAN.md                 # Master 6-phase implementation plan
-├── PLAN_PHASE4_TX.md       # Phase 4 TX path plan
+├── PLAN.md                 # Master implementation plan
 └── CLAUDE.md               # Development guidelines
 ```
 
@@ -127,9 +129,10 @@ psk31_client_workspace/
 - [x] Phase 1.5: Frontend layout, modular components, config persistence, E2E tests
 - [x] Phase 2: Serial / CAT communication with FT-991A
 - [x] Phase 3: Audio subsystem + live waterfall display
-- [ ] Phase 4: PSK-31 TX path (encoder, modulator, audio output)
-- [ ] Phase 5: PSK-31 RX path (demodulator, decoder, Costas loop)
-- [ ] Phase 6: Integration + polish
+- [x] Phase 4: PSK-31 TX path (encoder, modulator, audio output, PTT)
+- [x] Phase 5: PSK-31 RX path (demodulator, Costas loop, Varicode decoder)
+- [x] Phase 6: Integration + polish (status bar, error handling, settings dialog, E2E tests, packaging)
+- [x] Phase 7: UI polish (band selector, TX power panel, waterfall controls, audio UX)
 
 See [PLAN.md](PLAN.md) for detailed implementation phases.
 
