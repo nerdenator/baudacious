@@ -1,6 +1,8 @@
 name: Update Playwright Snapshots
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       branch:
@@ -14,9 +16,18 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
+      - name: Resolve target branch
+        id: target
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "branch=${{ inputs.branch }}" >> $GITHUB_OUTPUT
+          else
+            echo "branch=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.branch }}
+          ref: ${{ steps.target.outputs.branch }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
@@ -38,6 +49,7 @@ jobs:
 
       - name: Commit updated snapshots
         run: |
+          BRANCH="${{ steps.target.outputs.branch }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add tests/e2e/**-snapshots/
@@ -45,5 +57,5 @@ jobs:
             echo "No snapshot changes to commit."
           else
             git commit -m "chore: update Playwright snapshots for Linux WebKit"
-            git push origin ${{ inputs.branch }}
+            git push origin "$BRANCH"
           fi

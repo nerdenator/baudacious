@@ -80,7 +80,12 @@ jobs:
         run: npx playwright install webkit --with-deps
 
       - name: Run Playwright tests with coverage instrumentation
-        run: npx playwright test --update-snapshots
+        run: |
+          if find tests/e2e -name "*-webkit-linux.png" | grep -q .; then
+            npx playwright test
+          else
+            npx playwright test --update-snapshots
+          fi
         env:
           CI: true
           VITE_COVERAGE: "true"
