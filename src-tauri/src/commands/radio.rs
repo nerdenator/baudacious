@@ -57,27 +57,22 @@ pub(crate) fn with_radio<T>(
     app: &AppHandle,
     f: impl FnOnce(&mut Box<dyn RadioControl>) -> Psk31Result<T>,
 ) -> Result<T, String> {
+    // Snapshot serial_port_name *before* acquiring the radio guard so we never
+    // hold both MutexGuards simultaneously. with_radio_inner may clear our local
+    // copy on a serial error; we write it back to AppState after dropping the guard.
+    let mut port_name_opt: Option<String> = state
+        .serial_port_name
+        .lock()
+        .map_err(|_| "Serial port state corrupted".to_string())?
+        .clone();
+
+    // Capture the original port name for the event payload before inner logic clears it.
+    let port_for_event = port_name_opt.clone().unwrap_or_default();
+
     let mut guard = state
         .radio
         .lock()
         .map_err(|_| "Radio state corrupted".to_string())?;
-
-    let mut port_name_opt: Option<String>;
-    {
-        // We need to pass a mutable ref to serial_port_name into with_radio_inner,
-        // but we can't hold two MutexGuards at once (deadlock risk). We snapshot
-        // the port name into a local, let inner logic clear it, then write back.
-        port_name_opt = state
-            .serial_port_name
-            .lock()
-            .map_err(|_| "Serial port state corrupted".to_string())?
-            .clone();
-    }
-
-    // Snapshot the port name *before* with_radio_inner can null it out.
-    // with_radio_inner sets *serial_port_name = None on serial errors,
-    // so we must capture the original value here for the event payload.
-    let port_for_event = port_name_opt.clone().unwrap_or_default();
 
     let result = with_radio_inner(&mut guard, &mut port_name_opt, f);
 

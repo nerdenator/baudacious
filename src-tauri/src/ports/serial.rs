@@ -41,7 +41,6 @@ pub trait SerialConnection: Send {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::Psk31Result;
 
     struct EchoSerial {
         response: Vec<u8>,
