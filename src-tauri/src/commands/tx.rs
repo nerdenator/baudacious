@@ -86,13 +86,14 @@ pub fn start_tx(
     text: String,
     device_id: String,
 ) -> Result<(), String> {
-    validate_tx_start(
-        state
-            .tx_thread
-            .lock()
-            .map_err(|_| "TX thread state corrupted".to_string())?
-            .is_some(),
-    )?;
+    // Acquire the guard once and keep it held so that the check-then-set is
+    // atomic: no concurrent start_tx/start_tune call can pass the guard test
+    // and overwrite the handle before we store ours.
+    let mut tx_guard = state
+        .tx_thread
+        .lock()
+        .map_err(|_| "TX thread state corrupted".to_string())?;
+    validate_tx_start(tx_guard.is_some())?;
 
     // Read carrier frequency from config
     let carrier_freq = state.config.lock().unwrap().carrier_freq;
@@ -133,11 +134,8 @@ pub fn start_tx(
         })
     };
 
-    state
-        .tx_thread
-        .lock()
-        .map_err(|_| "TX thread state corrupted".to_string())?
-        .replace(handle);
+    // Store handle while still holding the guard — closes the TOCTOU window
+    tx_guard.replace(handle);
 
     Ok(())
 }
@@ -179,13 +177,13 @@ pub fn start_tune(
     state: tauri::State<'_, AppState>,
     device_id: String,
 ) -> Result<(), String> {
-    validate_tx_start(
-        state
-            .tx_thread
-            .lock()
-            .map_err(|_| "TX thread state corrupted".to_string())?
-            .is_some(),
-    )?;
+    // Acquire guard once: atomic check-then-set prevents concurrent start_tune calls
+    // from both passing the guard test and overwriting each other's handles.
+    let mut tx_guard = state
+        .tx_thread
+        .lock()
+        .map_err(|_| "TX thread state corrupted".to_string())?;
+    validate_tx_start(tx_guard.is_some())?;
 
     let carrier_freq = state.config.lock().unwrap().carrier_freq;
     let sample_rate = state.config.lock().unwrap().sample_rate;
@@ -206,11 +204,8 @@ pub fn start_tune(
         run_tune_thread(app, abort, device_id, carrier_freq, f64::from(sample_rate));
     });
 
-    state
-        .tx_thread
-        .lock()
-        .map_err(|_| "TX thread state corrupted".to_string())?
-        .replace(handle);
+    // Store handle while still holding the guard — closes the TOCTOU window
+    tx_guard.replace(handle);
     Ok(())
 }
 
