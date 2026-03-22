@@ -58,7 +58,7 @@ jobs:
         run: |
           set -euo pipefail
           # Re-use the already-instrumented binary from the lcov step (--no-run skips re-running tests)
-          COVERAGE=$(cargo llvm-cov report --lib --json --summary-only \
+          COVERAGE=$(cargo llvm-cov report --json --summary-only \
             | python3 -c "import json,sys; d=json.load(sys.stdin); print(round(d['data'][0]['totals']['lines']['percent'],2))")
           if [ -z "${COVERAGE}" ]; then
             echo "Failed to determine Rust line coverage: COVERAGE is empty."
