@@ -141,14 +141,18 @@ pub fn start_tx(
 }
 
 fn stop_tx_inner(state: &AppState) -> Result<(), String> {
-    state.tx_abort.store(true, Ordering::SeqCst);
+    // Lock first, then set abort — prevents start_tx (which holds tx_thread while
+    // clearing tx_abort) from resetting our abort signal before we can join.
+    let handle = {
+        let mut guard = state
+            .tx_thread
+            .lock()
+            .map_err(|_| "TX thread state corrupted".to_string())?;
+        state.tx_abort.store(true, Ordering::SeqCst);
+        guard.take()
+    }; // guard released before join to avoid deadlock with run_tx_thread's try_lock
 
-    if let Some(handle) = state
-        .tx_thread
-        .lock()
-        .map_err(|_| "TX thread state corrupted".to_string())?
-        .take()
-    {
+    if let Some(handle) = handle {
         handle.join().map_err(|_| "TX thread panicked".to_string())?;
     }
 
@@ -210,14 +214,18 @@ pub fn start_tune(
 }
 
 fn stop_tune_inner(state: &AppState) -> Result<(), String> {
-    state.tx_abort.store(true, Ordering::SeqCst);
+    // Lock first, then set abort — same ordering as stop_tx_inner to prevent
+    // start_tune from resetting tx_abort=false while we're trying to stop.
+    let handle = {
+        let mut guard = state
+            .tx_thread
+            .lock()
+            .map_err(|_| "TX thread state corrupted".to_string())?;
+        state.tx_abort.store(true, Ordering::SeqCst);
+        guard.take()
+    }; // guard released before join
 
-    if let Some(handle) = state
-        .tx_thread
-        .lock()
-        .map_err(|_| "TX thread state corrupted".to_string())?
-        .take()
-    {
+    if let Some(handle) = handle {
         handle.join().map_err(|_| "Tune thread panicked".to_string())?;
     }
 
