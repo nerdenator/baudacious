@@ -93,4 +93,92 @@ mod tests {
         // 2 cycles = 4 zero crossings
         assert_eq!(zero_crossings, 4);
     }
+
+    #[test]
+    fn test_set_frequency_updates_phase_increment() {
+        let mut nco = Nco::new(1000.0, 48000.0);
+        nco.set_frequency(2000.0);
+        let freq = nco.frequency();
+        assert!((freq - 2000.0).abs() < 0.001, "Expected 2000 Hz, got {}", freq);
+    }
+
+    #[test]
+    fn test_frequency_getter_matches_constructor() {
+        let nco = Nco::new(1500.0, 48000.0);
+        let freq = nco.frequency();
+        assert!((freq - 1500.0).abs() < 0.001, "Expected 1500 Hz, got {}", freq);
+    }
+
+    #[test]
+    fn test_adjust_phase_shifts_output() {
+        let mut nco_ref = Nco::new(1000.0, 48000.0);
+        let mut nco_shifted = Nco::new(1000.0, 48000.0);
+
+        // Shift by pi — cosine(x + pi) = -cosine(x)
+        nco_shifted.adjust_phase(PI);
+
+        let ref_sample = nco_ref.next();
+        let shifted_sample = nco_shifted.next();
+
+        assert!(
+            (ref_sample + shifted_sample).abs() < 0.01,
+            "Phase shift of pi should invert the signal: ref={}, shifted={}",
+            ref_sample,
+            shifted_sample
+        );
+    }
+
+    #[test]
+    fn test_next_iq_returns_cos_sin_pair() {
+        let mut nco = Nco::new(0.0, 48000.0); // 0 Hz — phase stays at 0
+        let (i, q) = nco.next_iq();
+        // At phase=0: cos(0)=1, sin(0)=0
+        assert!((i - 1.0).abs() < 0.001, "I should be cos(0)=1, got {}", i);
+        assert!(q.abs() < 0.001, "Q should be sin(0)=0, got {}", q);
+    }
+
+    #[test]
+    fn test_reset_restores_phase_to_zero() {
+        let mut nco = Nco::new(1000.0, 48000.0);
+
+        // Advance to some arbitrary phase
+        for _ in 0..100 {
+            nco.next();
+        }
+
+        nco.reset();
+
+        // After reset, first sample should be cos(0) = 1.0
+        let sample = nco.next();
+        assert!(
+            (sample - 1.0).abs() < 0.001,
+            "After reset, first sample should be 1.0, got {}",
+            sample
+        );
+    }
+
+    #[test]
+    fn test_phase_wraps_after_adjust() {
+        let mut nco = Nco::new(1000.0, 48000.0);
+
+        // Adjust by a large amount — phase should still produce valid output
+        nco.adjust_phase(100.0 * PI);
+
+        let (i, q) = nco.next_iq();
+        // Values must be in [-1, 1]
+        assert!(i >= -1.0 && i <= 1.0, "I out of range: {}", i);
+        assert!(q >= -1.0 && q <= 1.0, "Q out of range: {}", q);
+    }
+
+    #[test]
+    fn test_phase_wraps_negative_adjust() {
+        let mut nco = Nco::new(1000.0, 48000.0);
+
+        // Adjust by a large negative amount
+        nco.adjust_phase(-100.0 * PI);
+
+        let (i, q) = nco.next_iq();
+        assert!(i >= -1.0 && i <= 1.0, "I out of range after negative adjust: {}", i);
+        assert!(q >= -1.0 && q <= 1.0, "Q out of range after negative adjust: {}", q);
+    }
 }

@@ -374,6 +374,55 @@ mod tests {
         assert!(result.is_err(), "expected Err when write fails");
     }
 
+    #[test]
+    fn execute_propagates_write_error() {
+        // execute() should propagate the write error through its map_err closure
+        let mut session = CatSession::new(Box::new(FailingWriteMockSerial));
+        let result = session.execute(&CatCommand::GetFrequencyA);
+        assert!(result.is_err(), "expected Err when serial write fails");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("write failed"), "expected write error: {msg}");
+    }
+
+    // --- ensure_command_delay (inner branch with Some(last_command_time)) ---
+
+    #[test]
+    fn ensure_command_delay_sleeps_when_within_window() {
+        // Set last_command_time to *just now* so elapsed < 50ms is guaranteed,
+        // deterministically exercising the sleep branch regardless of CI load.
+        let (mut session, _) = make_session("FA00014070000;");
+        session.last_command_time = Some(Instant::now());
+        // execute() calls ensure_command_delay first; with last_command_time just set,
+        // the sleep path is guaranteed to run.
+        let result = session.execute(&CatCommand::GetFrequencyA);
+        assert!(result.is_ok(), "execute after forced delay should succeed: {result:?}");
+    }
+
+    // --- Invalid UTF-8 response ---
+
+    struct InvalidUtf8MockSerial;
+
+    impl SerialConnection for InvalidUtf8MockSerial {
+        fn write(&mut self, _: &[u8]) -> Psk31Result<usize> { Ok(0) }
+        fn read(&mut self, buf: &mut [u8]) -> Psk31Result<usize> {
+            // 0xFF 0xFE are invalid UTF-8 followed by ';' to end the read loop
+            let bytes: &[u8] = &[0xFF, 0xFE, b';'];
+            let n = bytes.len().min(buf.len());
+            buf[..n].copy_from_slice(&bytes[..n]);
+            Ok(n)
+        }
+        fn close(&mut self) -> Psk31Result<()> { Ok(()) }
+        fn is_connected(&self) -> bool { true }
+    }
+
+    #[test]
+    fn invalid_utf8_response_returns_err() {
+        let mut session = CatSession::new(Box::new(InvalidUtf8MockSerial));
+        let result = session.execute(&CatCommand::GetFrequencyA);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Invalid UTF-8"), "expected UTF-8 error: {err}");
+    }
+
     // --- Long response regression ---
 
     #[test]

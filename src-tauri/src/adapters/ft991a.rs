@@ -264,6 +264,16 @@ mod tests {
     }
 
     #[test]
+    fn is_transmitting_reflects_ptt_state() {
+        let (mut radio, _) = make_radio(";");
+        assert!(!radio.is_transmitting(), "should start not transmitting");
+        radio.is_transmitting = true;
+        assert!(radio.is_transmitting(), "should report transmitting after ptt_on");
+        radio.is_transmitting = false;
+        assert!(!radio.is_transmitting(), "should report not transmitting after ptt_off");
+    }
+
+    #[test]
     fn set_frequency_sends_bs_then_fa() {
         // Both BS; and FA; are write-only (no ack). Mock response is irrelevant.
         let (mut radio, log) = make_radio(";");
@@ -512,6 +522,157 @@ mod tests {
                 "band_select_code({hz}) should be {expected}"
             );
         }
+    }
+
+    // --- Drop impl: PTT safety ---
+
+    #[test]
+    fn drop_while_transmitting_sends_ptt_off() {
+        // Verify the Drop impl sends TX0; when dropped while is_transmitting is true.
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mock = MockSerial {
+            log: Arc::clone(&log),
+            response: ";".to_string(),
+        };
+        let mut radio = Ft991aRadio::new(Box::new(mock));
+        radio.is_transmitting = true;
+        drop(radio);
+        let cmds = log.lock().unwrap();
+        assert!(
+            cmds.iter().any(|c| c == "TX0;"),
+            "Drop should send TX0; when is_transmitting is true, got: {:?}",
+            *cmds
+        );
+    }
+
+    #[test]
+    fn drop_while_not_transmitting_sends_no_ptt_off() {
+        // When is_transmitting is false, Drop should not send any commands.
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mock = MockSerial {
+            log: Arc::clone(&log),
+            response: ";".to_string(),
+        };
+        let radio = Ft991aRadio::new(Box::new(mock));
+        // is_transmitting defaults to false
+        drop(radio);
+        assert!(
+            log.lock().unwrap().is_empty(),
+            "Drop should not send commands when is_transmitting is false"
+        );
+    }
+
+    // --- is_amateur_frequency: VHF exact lower boundaries and between-band gaps ---
+
+    #[test]
+    fn is_amateur_frequency_vhf_lower_boundaries() {
+        // Exact lower boundary of each VHF/UHF band
+        assert!(is_amateur_frequency(50_000_000), "50 MHz (6m lower) should be amateur");
+        assert!(is_amateur_frequency(144_000_000), "144 MHz (2m lower) should be amateur");
+        assert!(is_amateur_frequency(420_000_000), "420 MHz (70cm lower) should be amateur");
+        // Just below each VHF/UHF band
+        assert!(!is_amateur_frequency(49_999_999), "49.999999 MHz should not be amateur");
+        assert!(!is_amateur_frequency(143_999_999), "143.999999 MHz should not be amateur");
+        assert!(!is_amateur_frequency(419_999_999), "419.999999 MHz should not be amateur");
+    }
+
+    #[test]
+    fn is_amateur_frequency_between_hf_bands() {
+        // Between 30m (10.1–10.15 MHz) and 20m (14.0–14.35 MHz)
+        assert!(!is_amateur_frequency(11_000_000), "11 MHz (between 30m and 20m) should not be amateur");
+        // Between 17m (18.068–18.168) and 15m (21.0–21.45 MHz)
+        assert!(!is_amateur_frequency(19_000_000), "19 MHz (between 17m and 15m) should not be amateur");
+    }
+
+    // --- band_select_code: fallback arm ---
+
+    #[test]
+    fn band_select_code_between_bands_returns_fallback() {
+        // 11 MHz is between 30m and 20m — hits the `_ => 5` fallback
+        assert_eq!(band_select_code(11_000_000), 5, "out-of-band frequency should return fallback code 5");
+    }
+
+    // --- get_status: full RadioStatus field assertions ---
+
+    #[test]
+    fn get_status_tx_flag_and_split() {
+        let response = make_if_body(14_070_000, "C", true, false, 0, true);
+        let (mut radio, _) = make_radio(&response);
+        let status = radio.get_status().unwrap();
+        assert_eq!(status.frequency_hz, 14_070_000);
+        assert_eq!(status.mode, "DATA-USB");
+        assert!(status.is_transmitting, "is_transmitting should be true");
+        assert!(status.split, "split should be true");
+    }
+
+    #[test]
+    fn get_status_rit_enabled_and_offset() {
+        let response = make_if_body(7_035_000, "1", false, true, -200, false);
+        let (mut radio, _) = make_radio(&response);
+        let status = radio.get_status().unwrap();
+        assert_eq!(status.frequency_hz, 7_035_000);
+        assert_eq!(status.mode, "LSB");
+        assert!(status.rit_enabled, "rit_enabled should be true");
+        assert_eq!(status.rit_offset_hz, -200, "rit_offset_hz should be -200");
+    }
+
+    // --- get_signal_strength: value in 0.0..=1.0 ---
+
+    #[test]
+    fn get_signal_strength_returns_value_in_range() {
+        // SM00015; → 15/30 = 0.5 (already tested in existing test, but also verify bounds)
+        let (mut radio, _) = make_radio("SM00015;");
+        let level = radio.get_signal_strength().unwrap();
+        assert!((0.0..=1.0).contains(&level), "signal strength should be in 0.0..=1.0, got {level}");
+    }
+
+    #[test]
+    fn get_signal_strength_max_value() {
+        // SM00030; → 30/30 = 1.0
+        let (mut radio, _) = make_radio("SM00030;");
+        let level = radio.get_signal_strength().unwrap();
+        assert!((0.0..=1.0).contains(&level), "signal strength at max should be in 0.0..=1.0, got {level}");
+    }
+
+    #[test]
+    fn get_signal_strength_min_value() {
+        // SM00000; → 0/30 = 0.0
+        let (mut radio, _) = make_radio("SM00000;");
+        let level = radio.get_signal_strength().unwrap();
+        assert_eq!(level, 0.0, "signal strength at zero should be 0.0");
+    }
+
+    // --- Unexpected response type → Err paths ---
+
+    #[test]
+    fn get_frequency_unexpected_response_is_err() {
+        // Returning ";" gives CatResponse::Ack, not FrequencyHz → triggers _ => Err
+        let (mut radio, _) = make_radio(";");
+        assert!(radio.get_frequency().is_err());
+    }
+
+    #[test]
+    fn get_mode_unexpected_response_is_err() {
+        let (mut radio, _) = make_radio(";");
+        assert!(radio.get_mode().is_err());
+    }
+
+    #[test]
+    fn get_tx_power_unexpected_response_is_err() {
+        let (mut radio, _) = make_radio(";");
+        assert!(radio.get_tx_power().is_err());
+    }
+
+    #[test]
+    fn get_signal_strength_unexpected_response_is_err() {
+        let (mut radio, _) = make_radio(";");
+        assert!(radio.get_signal_strength().is_err());
+    }
+
+    #[test]
+    fn get_status_unexpected_response_is_err() {
+        let (mut radio, _) = make_radio(";");
+        assert!(radio.get_status().is_err());
     }
 
     // --- set_frequency covers every band via BS; code ---

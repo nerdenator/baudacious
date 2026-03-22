@@ -587,6 +587,150 @@ mod tests {
         assert!(decode(&format!("XX{body};"), &GetStatus).is_err());
     }
 
+    // --- BandSelect ---
+
+    #[test]
+    fn decode_band_select_ack() {
+        // BandSelect is write-only; the radio replies with just ";"
+        assert_eq!(decode(";", &BandSelect(5)).unwrap(), CatResponse::Ack);
+    }
+
+    #[test]
+    fn decode_band_select_nak() {
+        assert!(decode("?", &BandSelect(5)).is_err());
+    }
+
+    // --- expect_ack edge cases ---
+
+    #[test]
+    fn decode_set_frequency_unexpected_response_is_err() {
+        // A non-";" response to a write command should be an error
+        assert!(decode("FA014070000;", &SetFrequencyA(14_070_000)).is_err());
+    }
+
+    #[test]
+    fn decode_ack_empty_string() {
+        // Empty string is a valid Ack (some firmware omits the ";")
+        assert_eq!(decode("", &PttOn).unwrap(), CatResponse::Ack);
+    }
+
+    // --- GetStatus body too short (< 25 chars) ---
+
+    #[test]
+    fn decode_if_body_too_short_returns_err() {
+        // "IF" + 10 char body — body is only 10 chars, less than 25 minimum
+        assert!(decode("IF0000000000;", &GetStatus).is_err());
+    }
+
+    #[test]
+    fn decode_if_body_exactly_24_chars_is_err() {
+        // 24-char body: one short of the 25-char compact minimum
+        let body: String = std::iter::repeat('0').take(24).collect();
+        let response = format!("IF{body};");
+        assert!(decode(&response, &GetStatus).is_err());
+    }
+
+    // --- parse_rit_offset edge cases (tested indirectly via full decode) ---
+
+    #[test]
+    fn decode_if_rit_negative_via_full_format() {
+        // Verify negative RIT offset in 37-char full IF response
+        let response = make_if_response(14_070_000, "DATA-USB", false, true, -500, false);
+        let s = match decode(&response, &GetStatus).unwrap() {
+            CatResponse::Status(s) => s,
+            _ => panic!("expected Status"),
+        };
+        assert_eq!(s.rit_offset_hz, -500);
+        assert!(s.rit_enabled);
+    }
+
+    #[test]
+    fn decode_if_rit_zero_no_sign() {
+        // RIT offset "00000" (no sign prefix) should parse as 0
+        let response = make_if_response(14_070_000, "DATA-USB", false, false, 0, false);
+        let s = match decode(&response, &GetStatus).unwrap() {
+            CatResponse::Status(s) => s,
+            _ => panic!("expected Status"),
+        };
+        assert_eq!(s.rit_offset_hz, 0);
+    }
+
+    // --- parse_rit_offset direct unit tests ---
+
+    #[test]
+    fn parse_rit_offset_positive() {
+        assert_eq!(parse_rit_offset("+1000"), 1000);
+    }
+
+    #[test]
+    fn parse_rit_offset_negative() {
+        assert_eq!(parse_rit_offset("-0500"), -500);
+    }
+
+    #[test]
+    fn parse_rit_offset_no_sign_digit_first() {
+        // "00000" — first byte is '0', hits the `_ =>` fallback branch
+        assert_eq!(parse_rit_offset("00000"), 0);
+    }
+
+    #[test]
+    fn parse_rit_offset_numeric_nonzero() {
+        // "12345" — no sign char, parses raw as i32
+        assert_eq!(parse_rit_offset("12345"), 12345);
+    }
+
+    #[test]
+    fn parse_rit_offset_too_short_returns_zero() {
+        assert_eq!(parse_rit_offset("+"), 0);
+        assert_eq!(parse_rit_offset(""), 0);
+    }
+
+    // --- lookup_mode direct unit tests ---
+
+    #[test]
+    fn lookup_mode_empty_string_returns_data_usb() {
+        // Empty mode_code hits the early-return branch in lookup_mode
+        assert_eq!(lookup_mode("", "00"), "DATA-USB");
+    }
+
+    #[test]
+    fn lookup_mode_unknown_code_falls_back_to_data_usb() {
+        assert_eq!(lookup_mode("Z", "0Z"), "DATA-USB");
+    }
+
+    // --- Parse error branches (non-numeric digit strings) ---
+
+    #[test]
+    fn parse_frequency_non_numeric_digits_returns_err() {
+        // "FAabc;" passes the prefix+length check but "abc".parse::<u64>() fails
+        assert!(decode("FAabc;", &GetFrequencyA).is_err());
+    }
+
+    #[test]
+    fn parse_signal_strength_non_numeric_returns_err() {
+        // "SM0xxxx;" passes the prefix+length check but "xxxx".parse::<u32>() fails
+        assert!(decode("SM0xxxx;", &GetSignalStrength).is_err());
+    }
+
+    #[test]
+    fn parse_status_full_non_numeric_freq_returns_err() {
+        // Build a 39-char IF string (IF + 37 body) with non-numeric frequency chars
+        let body = format!("{}{}", "xxxxxxxxxxx", "     +000000  01C0010000000");
+        let response = format!("IF{body};");
+        assert!(response.len() >= 41, "test setup: full IF response must be >= 41 chars");
+        assert!(decode(&response, &GetStatus).is_err());
+    }
+
+    #[test]
+    fn parse_status_compact_non_numeric_freq_returns_err() {
+        // Build a 27-char IF string (IF + 25 body) with non-numeric frequency at [3..12]
+        // Layout: prefix(3)="001" + freq(9)=non-numeric + rest(13 chars)
+        let body = "001xxxxxxxxx+000000C00000";
+        assert_eq!(body.len(), 25);
+        let response = format!("IF{body};");
+        assert!(decode(&response, &GetStatus).is_err());
+    }
+
     // --- Mode roundtrip ---
 
     #[test]

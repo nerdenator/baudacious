@@ -235,4 +235,74 @@ mod tests {
         let out = filter.process(0.0);
         assert_eq!(out, 0.0);
     }
+
+    #[test]
+    fn test_lowpass_low_cutoff_attenuates_above_passband() {
+        // Cutoff at 1000 Hz — 5000 Hz input should be strongly attenuated.
+        // A 63-tap FIR at 48 kHz has a minimum practical transition band of
+        // ~762 Hz, so 1000 Hz cutoff vs 5000 Hz signal is well within range.
+        let mut filter = FirFilter::lowpass(1000.0, 48000.0, 63);
+        let mut max_output = 0.0f32;
+        for i in 0..500 {
+            let sample = (2.0 * std::f32::consts::PI * 5000.0 * i as f32 / 48000.0).sin();
+            let out = filter.process(sample);
+            if i > 100 {
+                max_output = max_output.max(out.abs());
+            }
+        }
+        assert!(
+            max_output < 0.1,
+            "5000 Hz should be attenuated by 1000 Hz lowpass, got {}",
+            max_output
+        );
+    }
+
+    #[test]
+    fn test_lowpass_near_nyquist_passes_dc() {
+        // Cutoff near Nyquist (20kHz at 48kHz) — DC should still pass
+        let mut filter = FirFilter::lowpass(20000.0, 48000.0, 63);
+        let mut output = 0.0;
+        for _ in 0..200 {
+            output = filter.process(1.0);
+        }
+        assert!(
+            (output - 1.0).abs() < 0.05,
+            "DC should pass near-Nyquist lowpass, got {}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_bandpass_very_wide_bandwidth_passes_center() {
+        // Wide bandwidth (8000 Hz) bandpass centered at 4000 Hz
+        let mut filter = FirFilter::bandpass(4000.0, 8000.0, 48000.0, 127);
+        let mut max_output = 0.0f32;
+        for i in 0..5000 {
+            let sample = (2.0 * std::f32::consts::PI * 4000.0 * i as f32 / 48000.0).sin();
+            let out = filter.process(sample);
+            if i > 500 {
+                max_output = max_output.max(out.abs());
+            }
+        }
+        assert!(
+            max_output > 0.3,
+            "Center frequency should pass wide bandpass, got {}",
+            max_output
+        );
+    }
+
+    #[test]
+    fn test_bandpass_rejects_dc() {
+        // Bandpass centered at 2000 Hz should reject DC
+        let mut filter = FirFilter::bandpass(2000.0, 200.0, 48000.0, 127);
+        let mut output = 0.0f32;
+        for _ in 0..500 {
+            output = filter.process(1.0);
+        }
+        assert!(
+            output.abs() < 0.1,
+            "DC should be rejected by bandpass at 2000 Hz, got {}",
+            output
+        );
+    }
 }

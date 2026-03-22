@@ -101,33 +101,66 @@ pub fn start_audio_stream(
 
 #[tauri::command]
 pub fn stop_audio_stream(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    // Stop RX decoder first (it runs inside the audio thread)
-    state.rx_running.store(false, Ordering::SeqCst);
-
-    // Signal the thread to stop
-    state.audio_running.store(false, Ordering::SeqCst);
-
     // Join the thread — it clears audio_device_name on exit
-    if let Some(handle) = state.audio_thread.lock().unwrap().take() {
+    stop_audio_stream_inner(&state.audio_running, &state.rx_running, &state.audio_thread)
+}
+
+fn start_rx_inner(audio_running: &AtomicBool, rx_running: &AtomicBool) -> Result<(), String> {
+    if !audio_running.load(Ordering::SeqCst) {
+        return Err("Audio stream not running. Start audio first.".into());
+    }
+    rx_running.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+fn stop_rx_inner(rx_running: &AtomicBool) -> Result<(), String> {
+    rx_running.store(false, Ordering::SeqCst);
+    Ok(())
+}
+
+fn set_carrier_frequency_inner(
+    rx_carrier_freq: &std::sync::Mutex<f64>,
+    config: &std::sync::Mutex<crate::domain::ModemConfig>,
+    freq_hz: f64,
+) -> Result<(), String> {
+    if !(200.0..=3500.0).contains(&freq_hz) {
+        return Err("Carrier frequency must be between 200-3500 Hz".into());
+    }
+    *rx_carrier_freq
+        .lock()
+        .map_err(|_| "RX carrier frequency state corrupted".to_string())? = freq_hz;
+    config
+        .lock()
+        .map_err(|_| "Modem config state corrupted".to_string())?
+        .carrier_freq = freq_hz;
+    Ok(())
+}
+
+fn stop_audio_stream_inner(
+    audio_running: &AtomicBool,
+    rx_running: &AtomicBool,
+    audio_thread: &std::sync::Mutex<Option<thread::JoinHandle<()>>>,
+) -> Result<(), String> {
+    rx_running.store(false, Ordering::SeqCst);
+    audio_running.store(false, Ordering::SeqCst);
+    if let Some(handle) = audio_thread
+        .lock()
+        .map_err(|_| "Audio thread state corrupted".to_string())?
+        .take()
+    {
         handle.join().map_err(|_| "Audio thread panicked".to_string())?;
     }
-
     Ok(())
 }
 
 #[tauri::command]
 pub fn start_rx(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    if !state.audio_running.load(Ordering::SeqCst) {
-        return Err("Audio stream not running. Start audio first.".into());
-    }
-    state.rx_running.store(true, Ordering::SeqCst);
-    Ok(())
+    start_rx_inner(&state.audio_running, &state.rx_running)
 }
 
 #[tauri::command]
 pub fn stop_rx(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    state.rx_running.store(false, Ordering::SeqCst);
-    Ok(())
+    stop_rx_inner(&state.rx_running)
 }
 
 #[tauri::command]
@@ -135,13 +168,7 @@ pub fn set_carrier_frequency(
     state: tauri::State<'_, AppState>,
     freq_hz: f64,
 ) -> Result<(), String> {
-    if !(200.0..=3500.0).contains(&freq_hz) {
-        return Err("Carrier frequency must be between 200-3500 Hz".into());
-    }
-    *state.rx_carrier_freq.lock().unwrap() = freq_hz;
-    // Also update config for TX consistency
-    state.config.lock().unwrap().carrier_freq = freq_hz;
-    Ok(())
+    set_carrier_frequency_inner(&state.rx_carrier_freq, &state.config, freq_hz)
 }
 
 /// The main audio processing loop, runs on its own thread.
@@ -276,4 +303,96 @@ fn run_audio_thread(
         "stopped".to_string()
     };
     let _ = app.emit("audio-status", AudioStatusPayload { status });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    // --- start_rx_inner ---
+
+    #[test]
+    fn start_rx_inner_err_when_audio_not_running() {
+        let audio = AtomicBool::new(false);
+        let rx = AtomicBool::new(false);
+        let err = start_rx_inner(&audio, &rx).unwrap_err();
+        assert!(err.contains("Audio stream not running"));
+        assert!(!rx.load(Ordering::SeqCst), "rx_running must stay false");
+    }
+
+    #[test]
+    fn start_rx_inner_ok_when_audio_running() {
+        let audio = AtomicBool::new(true);
+        let rx = AtomicBool::new(false);
+        start_rx_inner(&audio, &rx).unwrap();
+        assert!(rx.load(Ordering::SeqCst), "rx_running must be set to true");
+    }
+
+    // --- stop_rx_inner ---
+
+    #[test]
+    fn stop_rx_inner_clears_rx_running() {
+        let rx = AtomicBool::new(true);
+        stop_rx_inner(&rx).unwrap();
+        assert!(!rx.load(Ordering::SeqCst));
+    }
+
+    // --- set_carrier_frequency_inner ---
+
+    #[test]
+    fn set_carrier_frequency_inner_rejects_below_200hz() {
+        let freq = std::sync::Mutex::new(1000.0_f64);
+        let config = std::sync::Mutex::new(crate::domain::ModemConfig::default());
+        let err = set_carrier_frequency_inner(&freq, &config, 199.9).unwrap_err();
+        assert!(err.contains("200-3500"));
+    }
+
+    #[test]
+    fn set_carrier_frequency_inner_rejects_above_3500hz() {
+        let freq = std::sync::Mutex::new(1000.0_f64);
+        let config = std::sync::Mutex::new(crate::domain::ModemConfig::default());
+        let err = set_carrier_frequency_inner(&freq, &config, 3500.1).unwrap_err();
+        assert!(err.contains("200-3500"));
+    }
+
+    #[test]
+    fn set_carrier_frequency_inner_updates_both_stores() {
+        let freq = std::sync::Mutex::new(1000.0_f64);
+        let config = std::sync::Mutex::new(crate::domain::ModemConfig::default());
+        set_carrier_frequency_inner(&freq, &config, 1500.0).unwrap();
+        assert_eq!(*freq.lock().unwrap(), 1500.0);
+        assert_eq!(config.lock().unwrap().carrier_freq, 1500.0);
+    }
+
+    #[test]
+    fn set_carrier_frequency_inner_accepts_boundary_values() {
+        let freq = std::sync::Mutex::new(1000.0_f64);
+        let config = std::sync::Mutex::new(crate::domain::ModemConfig::default());
+        assert!(set_carrier_frequency_inner(&freq, &config, 200.0).is_ok());
+        assert!(set_carrier_frequency_inner(&freq, &config, 3500.0).is_ok());
+    }
+
+    // --- stop_audio_stream_inner ---
+
+    #[test]
+    fn stop_audio_stream_inner_clears_flags_when_no_thread() {
+        let audio = AtomicBool::new(true);
+        let rx = AtomicBool::new(true);
+        let thread_slot: std::sync::Mutex<Option<thread::JoinHandle<()>>> =
+            std::sync::Mutex::new(None);
+        stop_audio_stream_inner(&audio, &rx, &thread_slot).unwrap();
+        assert!(!audio.load(Ordering::SeqCst));
+        assert!(!rx.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn stop_audio_stream_inner_joins_thread() {
+        let audio = AtomicBool::new(true);
+        let rx = AtomicBool::new(false);
+        let handle = thread::spawn(|| {});
+        let thread_slot = std::sync::Mutex::new(Some(handle));
+        stop_audio_stream_inner(&audio, &rx, &thread_slot).unwrap();
+        assert!(thread_slot.lock().unwrap().is_none());
+    }
 }

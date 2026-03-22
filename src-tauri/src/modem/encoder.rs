@@ -226,6 +226,109 @@ mod tests {
     }
 
     #[test]
+    fn test_encode_unsupported_char_does_not_panic() {
+        // Non-ASCII characters are rejected by Varicode::encode and silently
+        // skipped by the encoder. The supported ASCII characters in the same
+        // string should still produce output.
+        let encoder = Psk31Encoder::new(48000, 1500.0);
+        // Mix a supported ASCII char ('e') with an unsupported non-ASCII char ('é').
+        let samples = encoder.encode("e\u{00E9}");
+        // Should equal encoding "e" alone (unsupported char produces no bits).
+        let expected_samples = encoder.encode("e");
+        assert_eq!(
+            samples.len(),
+            expected_samples.len(),
+            "unsupported char should be silently skipped, not cause extra samples"
+        );
+        assert!(!samples.is_empty(), "output should not be empty");
+    }
+
+    #[test]
+    fn test_encode_unsupported_char_only_produces_preamble_postamble() {
+        // A string containing only unsupported non-ASCII characters produces
+        // just preamble + postamble (no character data bits), because they are
+        // rejected by Varicode::encode and skipped.
+        // 'é' (U+00E9) and 'ð' (U+00F0) are both non-ASCII and unsupported.
+        let encoder = Psk31Encoder::new(48000, 1500.0);
+        let samples_unsupported = encoder.encode("\u{00E9}\u{00F0}");
+        let samples_empty = encoder.encode("");
+        assert_eq!(
+            samples_unsupported.len(),
+            samples_empty.len(),
+            "string of all unsupported chars should equal empty string output"
+        );
+    }
+
+    #[test]
+    fn test_encode_very_long_text_does_not_panic() {
+        // Encoding a 100-character string should not panic and should
+        // produce proportionally more samples than a single character.
+        // Both encode() calls share the same preamble+postamble overhead (64 bits),
+        // so the 100-char output is ~6.8× the 1-char output (not 100×).
+        let encoder = Psk31Encoder::new(48000, 1500.0);
+        let long_text: String = "e".repeat(100);
+        let samples_long = encoder.encode(&long_text);
+        let samples_single = encoder.encode("e");
+        // 100 chars → at least 5× more samples than 1 char
+        assert!(
+            samples_long.len() > samples_single.len() * 5,
+            "100-char string should produce far more samples than 1 char"
+        );
+        // All samples should remain in [-1.0, 1.0]
+        for &s in &samples_long {
+            assert!(s >= -1.0 && s <= 1.0, "sample out of range: {s}");
+        }
+    }
+
+    #[test]
+    fn test_encode_all_samples_finite() {
+        // No NaN or infinite values should appear in encoder output.
+        let encoder = Psk31Encoder::new(48000, 1500.0);
+        let samples = encoder.encode("Hello, World!");
+        for (i, &s) in samples.iter().enumerate() {
+            assert!(s.is_finite(), "sample {i} is not finite: {s}");
+        }
+    }
+
+    #[test]
+    fn test_encode_different_carrier_frequencies() {
+        // Encoder should work correctly at both low and high carrier frequencies.
+        for &freq in &[500.0f64, 1000.0, 1500.0, 2000.0, 2500.0] {
+            let encoder = Psk31Encoder::new(48000, freq);
+            let samples = encoder.encode("TEST");
+            assert!(!samples.is_empty(), "samples should not be empty for carrier {freq}");
+            for &s in &samples {
+                assert!(s >= -1.0 && s <= 1.0, "sample out of range at carrier {freq}: {s}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_encode_phase_changes_in_preamble() {
+        // Preamble bits are all false (phase-change bits). Every symbol should
+        // flip phase, confirmed by checking sign changes at SAMPLES_PER_SYMBOL/4.
+        let encoder = Psk31Encoder::new(48000, 1500.0);
+        let samples = encoder.encode("");
+        let check = SAMPLES_PER_SYMBOL / 4;
+        let mut phase_changes = 0;
+        let mut prev_sign = samples[check] >= 0.0;
+        for sym in 1..PREAMBLE_BITS {
+            let idx = sym * SAMPLES_PER_SYMBOL + check;
+            let sign = samples[idx] >= 0.0;
+            if sign != prev_sign {
+                phase_changes += 1;
+            }
+            prev_sign = sign;
+        }
+        // All 31 transitions between 32 preamble symbols should flip
+        assert_eq!(
+            phase_changes,
+            PREAMBLE_BITS - 1,
+            "every preamble symbol boundary should be a phase change"
+        );
+    }
+
+    #[test]
     fn test_encode_decode_loopback() {
         // Encode "HI" → detect phase transitions → decode with VaricodeDecoder
         let encoder = Psk31Encoder::new(48000, 1500.0);

@@ -54,6 +54,25 @@ jobs:
           cat coverage-rust.txt >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
+      - name: Enforce 80% line coverage gate
+        run: |
+          set -euo pipefail
+          # `cargo llvm-cov report` is a reporting-only subcommand: it reads the profdata
+          # written by the lcov step above and never re-runs tests.
+          COVERAGE=$(cargo llvm-cov report --json --summary-only \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['data'][0]['totals']['lines']['percent'])")
+          if [ -z "${COVERAGE}" ]; then
+            echo "Failed to determine Rust line coverage: COVERAGE is empty."
+            exit 1
+          fi
+          echo "Rust line coverage: $(printf '%.2f' "${COVERAGE}")%"
+          if awk "BEGIN { exit (${COVERAGE} < 80) }"; then
+            echo "Coverage ${COVERAGE}% meets the 80% threshold."
+          else
+            echo "Coverage ${COVERAGE}% is below the required 80% threshold."
+            exit 1
+          fi
+
       - name: Upload lcov report
         uses: actions/upload-artifact@v4
         with:

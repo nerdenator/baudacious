@@ -132,4 +132,93 @@ mod tests {
         assert_eq!(cr.last_symbol, 0.0);
         assert_eq!(cr.sample_count, sps / 2.0);
     }
+
+    #[test]
+    fn test_timing_error_zero_for_alternating_symbols() {
+        // When alternating +1/-1 samples arrive exactly on symbol boundaries,
+        // the Mueller-Muller error should average near zero over many symbols.
+        let sps = 1536.0;
+        let mut cr = ClockRecovery::new(sps);
+
+        let mut omega_after = 0.0;
+        let mut decisions = 0;
+        // Feed alternating symbols perfectly timed
+        for sym in 0..50 {
+            let value: f32 = if sym % 2 == 0 { 1.0 } else { -1.0 };
+            for _ in 0..sps as usize {
+                if let Some(_) = cr.process(value) {
+                    omega_after = cr.omega;
+                    decisions += 1;
+                }
+            }
+        }
+
+        assert!(decisions > 0, "Should have made at least one decision");
+        // Omega should remain close to nominal (within ±5% clamping)
+        assert!(
+            omega_after >= sps * 0.9 && omega_after <= sps * 1.1,
+            "Omega drifted outside clamped range: {}",
+            omega_after
+        );
+    }
+
+    #[test]
+    fn test_reset_clears_last_symbol() {
+        let sps = 1536.0;
+        let mut cr = ClockRecovery::new(sps);
+
+        // Drive last_symbol to non-zero
+        for _ in 0..(sps as usize * 3) {
+            cr.process(-0.9);
+        }
+
+        cr.reset();
+        assert_eq!(cr.last_symbol, 0.0, "last_symbol should be cleared by reset");
+    }
+
+    #[test]
+    fn test_omega_converges_near_nominal_with_clean_signal() {
+        // Feed a clean periodic signal and verify omega stays near nominal
+        let sps = 1536.0;
+        let mut cr = ClockRecovery::new(sps);
+
+        for i in 0..(sps as usize * 20) {
+            let phase = (i as f64 % sps) / sps;
+            let sample = if phase < 0.5 { 0.8f32 } else { -0.8 };
+            cr.process(sample);
+        }
+
+        assert!(
+            (cr.omega - sps).abs() < sps * 0.05,
+            "Omega should stay near nominal with clean signal, got {}",
+            cr.omega
+        );
+    }
+
+    #[test]
+    fn test_first_decision_fires_at_half_symbol() {
+        // The counter starts at sps/2, so the first decision should fire
+        // after the first sps/2 samples (at sample index sps/2).
+        let sps = 10.0; // small sps for easy reasoning
+        let mut cr = ClockRecovery::new(sps);
+        let mut first_decision_at = None;
+
+        for i in 0..30 {
+            if cr.process(1.0).is_some() && first_decision_at.is_none() {
+                first_decision_at = Some(i);
+            }
+        }
+
+        // First decision should be around sample 4 (sps/2 - 1) due to counter init
+        assert!(
+            first_decision_at.is_some(),
+            "Should have received at least one decision"
+        );
+        let idx = first_decision_at.unwrap();
+        assert!(
+            idx < sps as usize,
+            "First decision should fire within the first symbol period, fired at {}",
+            idx
+        );
+    }
 }

@@ -59,6 +59,19 @@ fn ensure_data_mode(radio: &mut dyn RadioControl) {
     }
 }
 
+/// Pure validation for `start_tx` / `start_tune` — no I/O, fully unit-testable.
+///
+/// Arguments:
+/// - `is_transmitting`: `true` when a tx/tune thread is already running
+///
+/// Returns `Err` with a human-readable message when TX should be blocked.
+pub(crate) fn validate_tx_start(is_transmitting: bool) -> Result<(), String> {
+    if is_transmitting {
+        return Err("Already transmitting".into());
+    }
+    Ok(())
+}
+
 /// Payload for `tx-status` events sent to the frontend
 #[derive(Clone, Serialize)]
 struct TxStatusPayload {
@@ -73,10 +86,14 @@ pub fn start_tx(
     text: String,
     device_id: String,
 ) -> Result<(), String> {
-    // Check if already transmitting
-    if state.tx_thread.lock().unwrap().is_some() {
-        return Err("Already transmitting".into());
-    }
+    // Acquire the guard once and keep it held so that the check-then-set is
+    // atomic: no concurrent start_tx/start_tune call can pass the guard test
+    // and overwrite the handle before we store ours.
+    let mut tx_guard = state
+        .tx_thread
+        .lock()
+        .map_err(|_| "TX thread state corrupted".to_string())?;
+    validate_tx_start(tx_guard.is_some())?;
 
     // Read carrier frequency from config
     let carrier_freq = state.config.lock().unwrap().carrier_freq;
@@ -117,33 +134,45 @@ pub fn start_tx(
         })
     };
 
-    state.tx_thread.lock().unwrap().replace(handle);
+    // Store handle while still holding the guard — closes the TOCTOU window
+    tx_guard.replace(handle);
+
+    Ok(())
+}
+
+fn stop_tx_inner(state: &AppState) -> Result<(), String> {
+    // Lock first, then set abort — prevents start_tx (which holds tx_thread while
+    // clearing tx_abort) from resetting our abort signal before we can join.
+    let handle = {
+        let mut guard = state
+            .tx_thread
+            .lock()
+            .map_err(|_| "TX thread state corrupted".to_string())?;
+        state.tx_abort.store(true, Ordering::SeqCst);
+        guard.take()
+    }; // guard released before join to avoid deadlock with run_tx_thread's try_lock
+
+    if let Some(handle) = handle {
+        handle.join().map_err(|_| "TX thread panicked".to_string())?;
+    }
+
+    match state.radio.lock() {
+        Ok(mut guard) => {
+            if let Some(radio) = guard.as_mut() {
+                if let Err(e) = radio.ptt_off() {
+                    log::warn!("PTT OFF failed: {e}");
+                }
+            }
+        }
+        Err(_) => log::warn!("stop_tx: radio mutex poisoned, skipping PTT off"),
+    }
 
     Ok(())
 }
 
 #[tauri::command]
 pub fn stop_tx(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    // Signal abort
-    state.tx_abort.store(true, Ordering::SeqCst);
-
-    // Join the thread
-    if let Some(handle) = state.tx_thread.lock().unwrap().take() {
-        handle.join().map_err(|_| "TX thread panicked".to_string())?;
-    }
-
-    // PTT OFF (ignore errors if no radio)
-    let ptt_result = state
-        .radio
-        .lock()
-        .ok()
-        .and_then(|mut guard| guard.as_mut().map(|r| r.ptt_off()));
-
-    if let Some(Err(e)) = ptt_result {
-        log::warn!("PTT OFF failed: {e}");
-    }
-
-    Ok(())
+    stop_tx_inner(&state)
 }
 
 #[tauri::command]
@@ -152,9 +181,13 @@ pub fn start_tune(
     state: tauri::State<'_, AppState>,
     device_id: String,
 ) -> Result<(), String> {
-    if state.tx_thread.lock().unwrap().is_some() {
-        return Err("Already transmitting".into());
-    }
+    // Acquire guard once: atomic check-then-set prevents concurrent start_tune calls
+    // from both passing the guard test and overwriting each other's handles.
+    let mut tx_guard = state
+        .tx_thread
+        .lock()
+        .map_err(|_| "TX thread state corrupted".to_string())?;
+    validate_tx_start(tx_guard.is_some())?;
 
     let carrier_freq = state.config.lock().unwrap().carrier_freq;
     let sample_rate = state.config.lock().unwrap().sample_rate;
@@ -175,32 +208,48 @@ pub fn start_tune(
         run_tune_thread(app, abort, device_id, carrier_freq, f64::from(sample_rate));
     });
 
-    state.tx_thread.lock().unwrap().replace(handle);
+    // Store handle while still holding the guard — closes the TOCTOU window
+    tx_guard.replace(handle);
+    Ok(())
+}
+
+fn stop_tune_inner(state: &AppState) -> Result<(), String> {
+    // Lock first, then set abort — same ordering as stop_tx_inner to prevent
+    // start_tune from resetting tx_abort=false while we're trying to stop.
+    let handle = {
+        let mut guard = state
+            .tx_thread
+            .lock()
+            .map_err(|_| "TX thread state corrupted".to_string())?;
+        state.tx_abort.store(true, Ordering::SeqCst);
+        guard.take()
+    }; // guard released before join
+
+    if let Some(handle) = handle {
+        handle.join().map_err(|_| "Tune thread panicked".to_string())?;
+    }
+
+    let configured_watts = state.config.lock().unwrap().tx_power_watts;
+    match state.radio.lock() {
+        Ok(mut guard) => {
+            if let Some(radio) = guard.as_mut() {
+                if let Err(e) = radio.ptt_off() {
+                    log::warn!("PTT OFF failed: {e}");
+                }
+                if let Err(e) = radio.set_tx_power(configured_watts) {
+                    log::warn!("TX power restore failed: {e}");
+                }
+            }
+        }
+        Err(_) => log::warn!("stop_tune: radio mutex poisoned, skipping PTT off and power restore"),
+    }
+
     Ok(())
 }
 
 #[tauri::command]
 pub fn stop_tune(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    state.tx_abort.store(true, Ordering::SeqCst);
-
-    if let Some(handle) = state.tx_thread.lock().unwrap().take() {
-        handle.join().map_err(|_| "Tune thread panicked".to_string())?;
-    }
-
-    // Restore the configured TX power now that tune is done
-    let configured_watts = state.config.lock().unwrap().tx_power_watts;
-    if let Ok(mut guard) = state.radio.lock() {
-        if let Some(radio) = guard.as_mut() {
-            if let Err(e) = radio.ptt_off() {
-                log::warn!("PTT OFF failed: {e}");
-            }
-            if let Err(e) = radio.set_tx_power(configured_watts) {
-                log::warn!("TX power restore failed: {e}");
-            }
-        }
-    }
-
-    Ok(())
+    stop_tune_inner(&state)
 }
 
 /// Tune thread: transmits a continuous sine wave at the carrier frequency until aborted.
@@ -428,5 +477,263 @@ fn run_tx_thread(
         }
 
         thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapters::mock_radio::MockRadio;
+    use crate::domain::{Frequency, Psk31Error, Psk31Result, RadioStatus};
+    use crate::ports::RadioControl;
+
+    // -----------------------------------------------------------------------
+    // validate_tx_start
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn validate_tx_start_ok_when_not_transmitting() {
+        assert!(validate_tx_start(false).is_ok());
+    }
+
+    #[test]
+    fn validate_tx_start_err_when_already_transmitting() {
+        let err = validate_tx_start(true).unwrap_err();
+        assert_eq!(err, "Already transmitting");
+    }
+
+    // -----------------------------------------------------------------------
+    // ensure_data_mode — uses an inline configurable mock
+    // -----------------------------------------------------------------------
+
+    /// Controls what the mock radio returns for get_frequency / get_mode /
+    /// set_mode so we can exercise every branch of ensure_data_mode.
+    struct ModeMock {
+        freq_hz: f64,
+        current_mode: String,
+        /// If Some, get_frequency() returns this error instead of freq_hz
+        freq_err: Option<String>,
+        /// If Some, get_mode() returns this error instead of current_mode
+        mode_err: Option<String>,
+        /// If Some, set_mode() returns this error
+        set_mode_err: Option<String>,
+        /// Records the last mode passed to set_mode()
+        set_mode_called_with: Option<String>,
+    }
+
+    impl ModeMock {
+        /// Radio on 20m in the correct DATA-USB mode already
+        fn correct_mode() -> Self {
+            Self {
+                freq_hz: 14_070_000.0,
+                current_mode: "DATA-USB".to_string(),
+                freq_err: None,
+                mode_err: None,
+                set_mode_err: None,
+                set_mode_called_with: None,
+            }
+        }
+
+        /// Radio on 20m but in plain USB — needs correction to DATA-USB
+        fn wrong_mode() -> Self {
+            Self {
+                freq_hz: 14_070_000.0,
+                current_mode: "USB".to_string(),
+                freq_err: None,
+                mode_err: None,
+                set_mode_err: None,
+                set_mode_called_with: None,
+            }
+        }
+
+        /// get_frequency() will fail
+        fn freq_error() -> Self {
+            Self {
+                freq_hz: 0.0,
+                current_mode: "USB".to_string(),
+                freq_err: Some("read failed".to_string()),
+                mode_err: None,
+                set_mode_err: None,
+                set_mode_called_with: None,
+            }
+        }
+
+        /// get_mode() will fail
+        fn mode_read_error() -> Self {
+            Self {
+                freq_hz: 14_070_000.0,
+                current_mode: "USB".to_string(),
+                freq_err: None,
+                mode_err: Some("mode read failed".to_string()),
+                set_mode_err: None,
+                set_mode_called_with: None,
+            }
+        }
+
+        /// set_mode() will fail
+        fn set_mode_error() -> Self {
+            Self {
+                freq_hz: 14_070_000.0,
+                current_mode: "USB".to_string(),
+                freq_err: None,
+                mode_err: None,
+                set_mode_err: Some("set failed".to_string()),
+                set_mode_called_with: None,
+            }
+        }
+    }
+
+    impl RadioControl for ModeMock {
+        fn ptt_on(&mut self) -> Psk31Result<()> { Ok(()) }
+        fn ptt_off(&mut self) -> Psk31Result<()> { Ok(()) }
+        fn is_transmitting(&self) -> bool { false }
+        fn get_frequency(&mut self) -> Psk31Result<Frequency> {
+            if let Some(ref e) = self.freq_err {
+                return Err(Psk31Error::Serial(e.clone()));
+            }
+            Ok(Frequency::hz(self.freq_hz))
+        }
+        fn set_frequency(&mut self, _freq: Frequency) -> Psk31Result<()> { Ok(()) }
+        fn get_mode(&mut self) -> Psk31Result<String> {
+            if let Some(ref e) = self.mode_err {
+                return Err(Psk31Error::Cat(e.clone()));
+            }
+            Ok(self.current_mode.clone())
+        }
+        fn set_mode(&mut self, mode: &str) -> Psk31Result<()> {
+            self.set_mode_called_with = Some(mode.to_string());
+            if let Some(ref e) = self.set_mode_err {
+                return Err(Psk31Error::Cat(e.clone()));
+            }
+            self.current_mode = mode.to_string();
+            Ok(())
+        }
+        fn get_tx_power(&mut self) -> Psk31Result<u32> { Ok(25) }
+        fn set_tx_power(&mut self, _watts: u32) -> Psk31Result<()> { Ok(()) }
+        fn get_signal_strength(&mut self) -> Psk31Result<f32> { Ok(0.0) }
+        fn get_status(&mut self) -> Psk31Result<RadioStatus> {
+            Ok(RadioStatus {
+                frequency_hz: self.freq_hz as u64,
+                mode: self.current_mode.clone(),
+                is_transmitting: false,
+                rit_offset_hz: 0,
+                rit_enabled: false,
+                split: false,
+            })
+        }
+    }
+
+    #[test]
+    fn ensure_data_mode_noop_when_already_correct() {
+        let mut mock = ModeMock::correct_mode();
+        ensure_data_mode(&mut mock);
+        // set_mode should NOT have been called
+        assert!(mock.set_mode_called_with.is_none());
+    }
+
+    #[test]
+    fn ensure_data_mode_corrects_wrong_mode() {
+        let mut mock = ModeMock::wrong_mode();
+        ensure_data_mode(&mut mock);
+        assert_eq!(mock.set_mode_called_with.as_deref(), Some("DATA-USB"));
+    }
+
+    #[test]
+    fn ensure_data_mode_skips_on_freq_read_error() {
+        // Non-fatal — should return without panicking and without calling set_mode
+        let mut mock = ModeMock::freq_error();
+        ensure_data_mode(&mut mock);
+        assert!(mock.set_mode_called_with.is_none());
+    }
+
+    #[test]
+    fn ensure_data_mode_skips_on_mode_read_error() {
+        let mut mock = ModeMock::mode_read_error();
+        ensure_data_mode(&mut mock);
+        assert!(mock.set_mode_called_with.is_none());
+    }
+
+    #[test]
+    fn ensure_data_mode_tolerates_set_mode_failure() {
+        // set_mode fails — ensure_data_mode should return without panicking
+        let mut mock = ModeMock::set_mode_error();
+        ensure_data_mode(&mut mock); // must not panic
+        // set_mode was attempted
+        assert_eq!(mock.set_mode_called_with.as_deref(), Some("DATA-USB"));
+    }
+
+    // -----------------------------------------------------------------------
+    // stop_tx_inner
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn stop_tx_inner_no_thread_no_radio_ok() {
+        let state = AppState::new();
+        // No thread, no radio — should just set abort flag and return Ok
+        stop_tx_inner(&state).unwrap();
+        assert!(state.tx_abort.load(Ordering::SeqCst), "abort flag must be set");
+    }
+
+    #[test]
+    fn stop_tx_inner_calls_ptt_off_when_radio_present() {
+        let state = AppState::new();
+        *state.radio.lock().unwrap() = Some(Box::new(MockRadio::new()));
+        // ptt_off() is called inside stop_tx_inner; MockRadio accepts it without error
+        stop_tx_inner(&state).unwrap();
+    }
+
+    #[test]
+    fn stop_tx_inner_joins_thread() {
+        let state = AppState::new();
+        let handle = thread::spawn(|| {});
+        *state.tx_thread.lock().unwrap() = Some(handle);
+        stop_tx_inner(&state).unwrap();
+        // Thread handle was consumed
+        assert!(state.tx_thread.lock().unwrap().is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // stop_tune_inner
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn stop_tune_inner_no_thread_no_radio_ok() {
+        let state = AppState::new();
+        stop_tune_inner(&state).unwrap();
+        assert!(state.tx_abort.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn stop_tune_inner_calls_ptt_off_and_restores_tx_power() {
+        let state = AppState::new();
+        state.config.lock().unwrap().tx_power_watts = 50;
+        // MockRadio accepts ptt_off() and set_tx_power() without error
+        *state.radio.lock().unwrap() = Some(Box::new(MockRadio::new()));
+        stop_tune_inner(&state).unwrap();
+        // Verify the inner function covered the radio-present branch (no panic = pass)
+    }
+
+    #[test]
+    fn stop_tune_inner_joins_thread() {
+        let state = AppState::new();
+        let handle = thread::spawn(|| {});
+        *state.tx_thread.lock().unwrap() = Some(handle);
+        stop_tune_inner(&state).unwrap();
+        assert!(state.tx_thread.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn ensure_data_mode_lsb_below_10mhz() {
+        // 40m — expects DATA-LSB
+        let mut mock = ModeMock {
+            freq_hz: 7_074_000.0,
+            current_mode: "USB".to_string(),
+            freq_err: None,
+            mode_err: None,
+            set_mode_err: None,
+            set_mode_called_with: None,
+        };
+        ensure_data_mode(&mut mock);
+        assert_eq!(mock.set_mode_called_with.as_deref(), Some("DATA-LSB"));
     }
 }

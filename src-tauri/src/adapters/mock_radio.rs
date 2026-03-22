@@ -39,6 +39,12 @@ impl MockRadio {
     }
 }
 
+impl Default for MockRadio {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RadioControl for MockRadio {
     fn ptt_on(&mut self) -> Psk31Result<()> {
         self.is_transmitting = true;
@@ -116,5 +122,110 @@ impl RadioControl for MockRadio {
             rit_enabled: false,
             split: false,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::Frequency;
+
+    #[test]
+    fn new_has_default_state() {
+        let r = MockRadio::new();
+        assert_eq!(r.frequency, DEFAULT_FREQ_HZ);
+        assert_eq!(r.mode, DEFAULT_MODE);
+        assert_eq!(r.tx_power, DEFAULT_TX_POWER_W);
+        assert!(!r.is_transmitting);
+    }
+
+    #[test]
+    fn default_equals_new() {
+        let r = MockRadio::default();
+        assert_eq!(r.frequency, DEFAULT_FREQ_HZ);
+        assert_eq!(r.mode, DEFAULT_MODE);
+        assert_eq!(r.tx_power, DEFAULT_TX_POWER_W);
+        assert!(!r.is_transmitting);
+    }
+
+    #[test]
+    fn ptt_on_sets_transmitting() {
+        let mut r = MockRadio::new();
+        assert!(!r.is_transmitting());
+        r.ptt_on().unwrap();
+        assert!(r.is_transmitting());
+    }
+
+    #[test]
+    fn ptt_off_clears_transmitting() {
+        let mut r = MockRadio::new();
+        r.ptt_on().unwrap();
+        r.ptt_off().unwrap();
+        assert!(!r.is_transmitting());
+    }
+
+    #[test]
+    fn get_frequency_returns_default() {
+        let mut r = MockRadio::new();
+        let f = r.get_frequency().unwrap();
+        assert_eq!(f.as_hz(), DEFAULT_FREQ_HZ);
+    }
+
+    #[test]
+    fn set_and_get_frequency_roundtrip() {
+        let mut r = MockRadio::new();
+        let target = 7_074_000.0_f64;
+        r.set_frequency(Frequency::hz(target)).unwrap();
+        let got = r.get_frequency().unwrap();
+        assert_eq!(got.as_hz(), target);
+    }
+
+    #[test]
+    fn get_mode_returns_default() {
+        let mut r = MockRadio::new();
+        assert_eq!(r.get_mode().unwrap(), DEFAULT_MODE);
+    }
+
+    #[test]
+    fn set_and_get_mode_roundtrip() {
+        let mut r = MockRadio::new();
+        r.set_mode("USB").unwrap();
+        assert_eq!(r.get_mode().unwrap(), "USB");
+    }
+
+    #[test]
+    fn get_tx_power_returns_default() {
+        let mut r = MockRadio::new();
+        assert_eq!(r.get_tx_power().unwrap(), DEFAULT_TX_POWER_W);
+    }
+
+    #[test]
+    fn set_and_get_tx_power_roundtrip() {
+        let mut r = MockRadio::new();
+        r.set_tx_power(100).unwrap();
+        assert_eq!(r.get_tx_power().unwrap(), 100);
+    }
+
+    #[test]
+    fn get_signal_strength_returns_fixed_value() {
+        let mut r = MockRadio::new();
+        let s = r.get_signal_strength().unwrap();
+        assert!((s - 0.3).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn get_status_reflects_state() {
+        let mut r = MockRadio::new();
+        r.set_frequency(Frequency::hz(14_225_000.0)).unwrap();
+        r.set_mode("USB").unwrap();
+        r.ptt_on().unwrap();
+
+        let status = r.get_status().unwrap();
+        assert_eq!(status.frequency_hz, 14_225_000);
+        assert_eq!(status.mode, "USB");
+        assert!(status.is_transmitting);
+        assert_eq!(status.rit_offset_hz, 0);
+        assert!(!status.rit_enabled);
+        assert!(!status.split);
     }
 }

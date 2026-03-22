@@ -21,6 +21,45 @@ fn known_device(vid: u16, pid: u16) -> Option<&'static str> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn known_device_ft991a_cp210x() {
+        assert_eq!(known_device(0x10C4, 0xEA60), Some("Yaesu FT-991A / CP210x"));
+    }
+
+    #[test]
+    fn known_device_ft991a_cp2105() {
+        assert_eq!(
+            known_device(0x10C4, 0xEA70),
+            Some("Yaesu FT-991A / CP2105 (SLAB_USBtoUART)")
+        );
+    }
+
+    #[test]
+    fn known_device_ftdi_6001() {
+        assert_eq!(known_device(0x0403, 0x6001), Some("FTDI USB Serial"));
+    }
+
+    #[test]
+    fn known_device_ftdi_6015() {
+        assert_eq!(known_device(0x0403, 0x6015), Some("FTDI USB Serial"));
+    }
+
+    #[test]
+    fn known_device_prolific() {
+        assert_eq!(known_device(0x067B, 0x2303), Some("Prolific USB Serial"));
+    }
+
+    #[test]
+    fn known_device_unknown_returns_none() {
+        assert_eq!(known_device(0xFFFF, 0xFFFF), None);
+        assert_eq!(known_device(0x0000, 0x0000), None);
+    }
+}
+
 /// Zero-sized factory for creating serial port connections.
 pub struct SerialPortFactory;
 

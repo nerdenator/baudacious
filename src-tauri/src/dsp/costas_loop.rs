@@ -218,4 +218,37 @@ mod tests {
         assert_eq!(costas.filtered_i, 0.0);
         assert_eq!(costas.filtered_q, 0.0);
     }
+
+    #[test]
+    fn test_set_frequency_updates_nco() {
+        let mut costas = CostasLoop::new(1000.0, 48000.0, 2.0);
+        costas.set_frequency(1500.0);
+        // Assert directly that the NCO was updated to the new frequency.
+        // Use epsilon comparison: frequency() computes phase_increment * sample_rate / (2π),
+        // and the inverse of set_frequency's 2π * freq / sample_rate, so a tiny rounding
+        // error is possible in IEEE 754.
+        let freq = costas.nco.frequency();
+        assert!(
+            (freq - 1500.0).abs() < 1e-6,
+            "set_frequency should update the internal NCO to 1500 Hz (got {freq})"
+        );
+    }
+
+    #[test]
+    fn test_reset_clears_integrator_and_filters() {
+        let mut costas = CostasLoop::new(1000.0, 48000.0, 2.0);
+
+        // Drive the integrator non-zero
+        for i in 0..5000 {
+            let sample = (2.0 * PI * 1001.0 * i as f64 / 48000.0).cos() as f32;
+            costas.process(sample);
+        }
+
+        // Integrator should be non-zero due to frequency offset
+        // (just verify reset zeroes it regardless)
+        costas.reset();
+        assert_eq!(costas.integrator, 0.0, "integrator should be 0 after reset");
+        assert_eq!(costas.filtered_i, 0.0, "filtered_i should be 0 after reset");
+        assert_eq!(costas.filtered_q, 0.0, "filtered_q should be 0 after reset");
+    }
 }

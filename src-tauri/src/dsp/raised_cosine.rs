@@ -59,4 +59,52 @@ mod tests {
         assert!((envelope[0] - 1.0).abs() < 0.01);
         assert!(envelope[768] < 0.1); // Near zero at center
     }
+
+    #[test]
+    fn test_samples_per_symbol_getter() {
+        let shaper = RaisedCosineShaper::new(1536);
+        assert_eq!(shaper.samples_per_symbol(), 1536);
+    }
+
+    #[test]
+    fn test_samples_per_symbol_getter_small() {
+        let shaper = RaisedCosineShaper::new(1);
+        assert_eq!(shaper.samples_per_symbol(), 1);
+    }
+
+    #[test]
+    fn test_single_sample_no_phase_change() {
+        let shaper = RaisedCosineShaper::new(1);
+        let envelope = shaper.generate_envelope(false);
+        assert_eq!(envelope.len(), 1);
+        assert_eq!(envelope[0], 1.0);
+    }
+
+    #[test]
+    fn test_single_sample_phase_change() {
+        let shaper = RaisedCosineShaper::new(1);
+        let envelope = shaper.generate_envelope(true);
+        assert_eq!(envelope.len(), 1);
+        // At t=0/1=0.0: |cos(pi * 0)| = |cos(0)| = 1.0
+        assert!((envelope[0] - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_large_samples_per_symbol() {
+        let shaper = RaisedCosineShaper::new(48000);
+        let envelope = shaper.generate_envelope(true);
+        assert_eq!(envelope.len(), 48000);
+        // All values should be in [0, 1]
+        assert!(envelope.iter().all(|&v| v >= 0.0 && v <= 1.0));
+    }
+
+    #[test]
+    fn test_envelope_values_non_negative() {
+        let shaper = RaisedCosineShaper::new(1536);
+        let envelope = shaper.generate_envelope(true);
+        assert!(
+            envelope.iter().all(|&v| v >= 0.0),
+            "All envelope values should be non-negative (abs() applied)"
+        );
+    }
 }

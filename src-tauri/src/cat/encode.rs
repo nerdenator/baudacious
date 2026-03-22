@@ -127,6 +127,17 @@ mod tests {
         assert_eq!(encode(&GetStatus), "IF;");
     }
 
+    #[test]
+    fn encode_band_select() {
+        assert_eq!(encode(&BandSelect(5)), "BS05;");
+    }
+
+    #[test]
+    fn encode_band_select_zero_padded() {
+        // Single-digit band codes must be zero-padded to 2 digits
+        assert_eq!(encode(&BandSelect(1)), "BS01;");
+        assert_eq!(encode(&BandSelect(10)), "BS10;");
+    }
 
     #[test]
     fn encode_all_modes_roundtrip() {
