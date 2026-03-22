@@ -126,8 +126,13 @@ fn set_carrier_frequency_inner(
     if !(200.0..=3500.0).contains(&freq_hz) {
         return Err("Carrier frequency must be between 200-3500 Hz".into());
     }
-    *rx_carrier_freq.lock().unwrap() = freq_hz;
-    config.lock().unwrap().carrier_freq = freq_hz;
+    *rx_carrier_freq
+        .lock()
+        .map_err(|_| "RX carrier frequency state corrupted".to_string())? = freq_hz;
+    config
+        .lock()
+        .map_err(|_| "Modem config state corrupted".to_string())?
+        .carrier_freq = freq_hz;
     Ok(())
 }
 
@@ -138,7 +143,11 @@ fn stop_audio_stream_inner(
 ) -> Result<(), String> {
     rx_running.store(false, Ordering::SeqCst);
     audio_running.store(false, Ordering::SeqCst);
-    if let Some(handle) = audio_thread.lock().unwrap().take() {
+    if let Some(handle) = audio_thread
+        .lock()
+        .map_err(|_| "Audio thread state corrupted".to_string())?
+        .take()
+    {
         handle.join().map_err(|_| "Audio thread panicked".to_string())?;
     }
     Ok(())

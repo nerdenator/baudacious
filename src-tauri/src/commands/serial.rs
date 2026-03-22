@@ -70,9 +70,12 @@ fn connect_serial_inner(
 
 /// Pure disconnect logic extracted from the Tauri command for testability.
 fn disconnect_serial_inner(state: &AppState) -> Result<(), String> {
-    let mut radio_slot = state.radio.lock().map_err(|_| "Radio state corrupted".to_string())?;
-    // Drop will auto-release PTT if transmitting
-    *radio_slot = None;
+    {
+        let mut radio_slot =
+            state.radio.lock().map_err(|_| "Radio state corrupted".to_string())?;
+        // Drop will auto-release PTT if transmitting
+        *radio_slot = None;
+    } // radio guard released here before acquiring serial_port_name
     *state.serial_port_name.lock().map_err(|_| "Serial port state corrupted".to_string())? =
         None;
     Ok(())

@@ -245,9 +245,10 @@ mod tests {
 
     #[test]
     fn test_encode_unsupported_char_only_produces_preamble_postamble() {
-        // A string containing only unsupported characters (u8 value >= 0x80)
-        // produces just preamble + postamble (no character data bits).
-        // 'é' (U+00E9→0xE9) and 'ð' (U+00F0→0xF0) are both outside the table.
+        // A string containing only unsupported non-ASCII characters produces
+        // just preamble + postamble (no character data bits), because they are
+        // rejected by Varicode::encode and skipped.
+        // 'é' (U+00E9) and 'ð' (U+00F0) are both non-ASCII and unsupported.
         let encoder = Psk31Encoder::new(48000, 1500.0);
         let samples_unsupported = encoder.encode("\u{00E9}\u{00F0}");
         let samples_empty = encoder.encode("");

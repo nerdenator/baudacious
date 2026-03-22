@@ -196,15 +196,18 @@ fn stop_tune_inner(state: &AppState) -> Result<(), String> {
     }
 
     let configured_watts = state.config.lock().unwrap().tx_power_watts;
-    if let Ok(mut guard) = state.radio.lock() {
-        if let Some(radio) = guard.as_mut() {
-            if let Err(e) = radio.ptt_off() {
-                log::warn!("PTT OFF failed: {e}");
-            }
-            if let Err(e) = radio.set_tx_power(configured_watts) {
-                log::warn!("TX power restore failed: {e}");
+    match state.radio.lock() {
+        Ok(mut guard) => {
+            if let Some(radio) = guard.as_mut() {
+                if let Err(e) = radio.ptt_off() {
+                    log::warn!("PTT OFF failed: {e}");
+                }
+                if let Err(e) = radio.set_tx_power(configured_watts) {
+                    log::warn!("TX power restore failed: {e}");
+                }
             }
         }
+        Err(_) => log::warn!("stop_tune: radio mutex poisoned, skipping PTT off and power restore"),
     }
 
     Ok(())
