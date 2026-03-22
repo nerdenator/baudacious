@@ -8,8 +8,14 @@ pub struct Varicode;
 
 impl Varicode {
     /// Encode a character to its Varicode bit pattern
-    /// Returns None for unsupported characters
+    /// Returns None for unsupported characters (including non-ASCII)
     pub fn encode(ch: char) -> Option<&'static str> {
+        // Reject non-ASCII up front: Varicode is ASCII-only (0x00–0x7E).
+        // `ch as u8` would silently truncate chars > U+00FF (e.g. 'Ā' → 0x00 = NUL),
+        // producing a wrong encoding instead of None.
+        if !ch.is_ascii() {
+            return None;
+        }
         let code = match ch as u8 {
             0x00 => "1010101011",  // NUL
             0x01 => "1011011011",  // SOH
@@ -336,6 +342,15 @@ mod tests {
     fn test_encode_unsupported_char_returns_none() {
         // Characters above 0x7F are not in the Varicode table
         assert_eq!(Varicode::encode('é'), None);
+    }
+
+    #[test]
+    fn test_encode_char_above_u00ff_returns_none_not_truncated() {
+        // Regression: 'Ā' is U+0100. Before the is_ascii() guard, `ch as u8` would
+        // truncate 0x100 → 0x00 (NUL) and return Some("1010101011") instead of None.
+        assert_eq!(Varicode::encode('Ā'), None);
+        // Emoji similarly must not wrap around to a valid code
+        assert_eq!(Varicode::encode('😀'), None);
     }
 
     #[test]

@@ -86,10 +86,7 @@ pub fn start_tx(
     text: String,
     device_id: String,
 ) -> Result<(), String> {
-    // Check if already transmitting
-    if state.tx_thread.lock().unwrap().is_some() {
-        return Err("Already transmitting".into());
-    }
+    validate_tx_start(state.tx_thread.lock().unwrap().is_some())?;
 
     // Read carrier frequency from config
     let carrier_freq = state.config.lock().unwrap().carrier_freq;
@@ -166,9 +163,7 @@ pub fn start_tune(
     state: tauri::State<'_, AppState>,
     device_id: String,
 ) -> Result<(), String> {
-    if state.tx_thread.lock().unwrap().is_some() {
-        return Err("Already transmitting".into());
-    }
+    validate_tx_start(state.tx_thread.lock().unwrap().is_some())?;
 
     let carrier_freq = state.config.lock().unwrap().carrier_freq;
     let sample_rate = state.config.lock().unwrap().sample_rate;

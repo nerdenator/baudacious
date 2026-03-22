@@ -70,13 +70,18 @@ pub(crate) fn with_radio<T>(
         port_name_opt = state.serial_port_name.lock().unwrap().clone();
     }
 
+    // Snapshot the port name *before* with_radio_inner can null it out.
+    // with_radio_inner sets *serial_port_name = None on serial errors,
+    // so we must capture the original value here for the event payload.
+    let port_for_event = port_name_opt.clone().unwrap_or_default();
+
     match with_radio_inner(&mut guard, &mut port_name_opt, f) {
         Ok(val) => Ok(val),
         Err((msg, was_serial)) => {
             if was_serial {
                 // Flush the nulled port name back to AppState
                 *state.serial_port_name.lock().unwrap() = None;
-                let port = port_name_opt.unwrap_or_default();
+                let port = port_for_event;
                 let _ = app.emit(
                     "serial-disconnected",
                     SerialDisconnectedPayload { reason: msg.clone(), port },
