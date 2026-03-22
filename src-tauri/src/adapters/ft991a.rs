@@ -264,6 +264,16 @@ mod tests {
     }
 
     #[test]
+    fn is_transmitting_reflects_ptt_state() {
+        let (mut radio, _) = make_radio(";");
+        assert!(!radio.is_transmitting(), "should start not transmitting");
+        radio.is_transmitting = true;
+        assert!(radio.is_transmitting(), "should report transmitting after ptt_on");
+        radio.is_transmitting = false;
+        assert!(!radio.is_transmitting(), "should report not transmitting after ptt_off");
+    }
+
+    #[test]
     fn set_frequency_sends_bs_then_fa() {
         // Both BS; and FA; are write-only (no ack). Mock response is irrelevant.
         let (mut radio, log) = make_radio(";");

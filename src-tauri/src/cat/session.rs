@@ -374,6 +374,16 @@ mod tests {
         assert!(result.is_err(), "expected Err when write fails");
     }
 
+    #[test]
+    fn execute_propagates_write_error() {
+        // execute() should propagate the write error through its map_err closure
+        let mut session = CatSession::new(Box::new(FailingWriteMockSerial));
+        let result = session.execute(&CatCommand::GetFrequencyA);
+        assert!(result.is_err(), "expected Err when serial write fails");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("write failed"), "expected write error: {msg}");
+    }
+
     // --- ensure_command_delay (inner branch with Some(last_command_time)) ---
 
     #[test]
