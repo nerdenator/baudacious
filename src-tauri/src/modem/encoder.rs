@@ -227,11 +227,11 @@ mod tests {
 
     #[test]
     fn test_encode_unsupported_char_does_not_panic() {
-        // Characters with u8 value >= 0x80 are outside the Varicode table and
-        // are silently skipped. The supported characters in the same string should
-        // still produce output. 'é' (U+00E9) casts to u8 0xE9 — not in table.
+        // Non-ASCII characters are rejected by Varicode::encode and silently
+        // skipped by the encoder. The supported ASCII characters in the same
+        // string should still produce output.
         let encoder = Psk31Encoder::new(48000, 1500.0);
-        // Mix a supported char ('e') with an unsupported Latin-1 char ('é').
+        // Mix a supported ASCII char ('e') with an unsupported non-ASCII char ('é').
         let samples = encoder.encode("e\u{00E9}");
         // Should equal encoding "e" alone (unsupported char produces no bits).
         let expected_samples = encoder.encode("e");

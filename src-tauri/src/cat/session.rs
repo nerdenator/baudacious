@@ -377,15 +377,15 @@ mod tests {
     // --- ensure_command_delay (inner branch with Some(last_command_time)) ---
 
     #[test]
-    fn second_command_on_same_session_triggers_delay_branch() {
-        // After the first execute(), last_command_time is Some, so ensure_command_delay
-        // enters the if-let branch. If elapsed < 50ms (typical in tests), it sleeps.
-        // We verify the second call still succeeds and covers the inner delay logic.
+    fn ensure_command_delay_sleeps_when_within_window() {
+        // Set last_command_time to *just now* so elapsed < 50ms is guaranteed,
+        // deterministically exercising the sleep branch regardless of CI load.
         let (mut session, _) = make_session("FA00014070000;");
-        session.execute(&CatCommand::GetFrequencyA).unwrap();
-        // Calling execute again immediately: ensure_command_delay fires with Some(time)
+        session.last_command_time = Some(Instant::now());
+        // execute() calls ensure_command_delay first; with last_command_time just set,
+        // the sleep path is guaranteed to run.
         let result = session.execute(&CatCommand::GetFrequencyA);
-        assert!(result.is_ok(), "second command should succeed: {result:?}");
+        assert!(result.is_ok(), "execute after forced delay should succeed: {result:?}");
     }
 
     // --- Invalid UTF-8 response ---

@@ -67,7 +67,11 @@ pub(crate) fn with_radio<T>(
         // We need to pass a mutable ref to serial_port_name into with_radio_inner,
         // but we can't hold two MutexGuards at once (deadlock risk). We snapshot
         // the port name into a local, let inner logic clear it, then write back.
-        port_name_opt = state.serial_port_name.lock().unwrap().clone();
+        port_name_opt = state
+            .serial_port_name
+            .lock()
+            .map_err(|_| "Serial port state corrupted".to_string())?
+            .clone();
     }
 
     // Snapshot the port name *before* with_radio_inner can null it out.
