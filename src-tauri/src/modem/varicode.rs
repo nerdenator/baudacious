@@ -10,7 +10,7 @@ impl Varicode {
     /// Encode a character to its Varicode bit pattern
     /// Returns None for unsupported characters (including non-ASCII)
     pub fn encode(ch: char) -> Option<&'static str> {
-        // Reject non-ASCII up front: Varicode is ASCII-only (0x00–0x7E).
+        // Reject non-ASCII up front: Varicode is ASCII-only (0x00–0x7F).
         // `ch as u8` would silently truncate chars > U+00FF (e.g. 'Ā' → 0x00 = NUL),
         // producing a wrong encoding instead of None.
         if !ch.is_ascii() {

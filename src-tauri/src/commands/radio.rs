@@ -75,12 +75,22 @@ pub(crate) fn with_radio<T>(
     // so we must capture the original value here for the event payload.
     let port_for_event = port_name_opt.clone().unwrap_or_default();
 
-    match with_radio_inner(&mut guard, &mut port_name_opt, f) {
+    let result = with_radio_inner(&mut guard, &mut port_name_opt, f);
+
+    // Drop the radio guard before any further locking or I/O.
+    // The original code had an explicit drop(guard) here; preserving that avoids
+    // holding the radio mutex across serial_port_name.lock() and app.emit().
+    drop(guard);
+
+    match result {
         Ok(val) => Ok(val),
         Err((msg, was_serial)) => {
             if was_serial {
                 // Flush the nulled port name back to AppState
-                *state.serial_port_name.lock().unwrap() = None;
+                *state
+                    .serial_port_name
+                    .lock()
+                    .map_err(|_| "Serial port state corrupted".to_string())? = None;
                 let port = port_for_event;
                 let _ = app.emit(
                     "serial-disconnected",
