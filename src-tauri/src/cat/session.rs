@@ -374,6 +374,45 @@ mod tests {
         assert!(result.is_err(), "expected Err when write fails");
     }
 
+    // --- ensure_command_delay (inner branch with Some(last_command_time)) ---
+
+    #[test]
+    fn second_command_on_same_session_triggers_delay_branch() {
+        // After the first execute(), last_command_time is Some, so ensure_command_delay
+        // enters the if-let branch. If elapsed < 50ms (typical in tests), it sleeps.
+        // We verify the second call still succeeds and covers the inner delay logic.
+        let (mut session, _) = make_session("FA00014070000;");
+        session.execute(&CatCommand::GetFrequencyA).unwrap();
+        // Calling execute again immediately: ensure_command_delay fires with Some(time)
+        let result = session.execute(&CatCommand::GetFrequencyA);
+        assert!(result.is_ok(), "second command should succeed: {result:?}");
+    }
+
+    // --- Invalid UTF-8 response ---
+
+    struct InvalidUtf8MockSerial;
+
+    impl SerialConnection for InvalidUtf8MockSerial {
+        fn write(&mut self, _: &[u8]) -> Psk31Result<usize> { Ok(0) }
+        fn read(&mut self, buf: &mut [u8]) -> Psk31Result<usize> {
+            // 0xFF 0xFE are invalid UTF-8 followed by ';' to end the read loop
+            let bytes: &[u8] = &[0xFF, 0xFE, b';'];
+            let n = bytes.len().min(buf.len());
+            buf[..n].copy_from_slice(&bytes[..n]);
+            Ok(n)
+        }
+        fn close(&mut self) -> Psk31Result<()> { Ok(()) }
+        fn is_connected(&self) -> bool { true }
+    }
+
+    #[test]
+    fn invalid_utf8_response_returns_err() {
+        let mut session = CatSession::new(Box::new(InvalidUtf8MockSerial));
+        let result = session.execute(&CatCommand::GetFrequencyA);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Invalid UTF-8"), "expected UTF-8 error: {err}");
+    }
+
     // --- Long response regression ---
 
     #[test]

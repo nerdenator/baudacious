@@ -289,4 +289,36 @@ mod tests {
         let err = delete_config_from_dir(dir.path(), "Ghost").unwrap_err();
         assert!(err.contains("not found"));
     }
+
+    #[test]
+    fn load_config_with_invalid_name_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = load_config_from_dir(dir.path(), "bad/name").unwrap_err();
+        assert!(err.contains("Invalid configuration name"));
+    }
+
+    #[test]
+    fn delete_config_with_invalid_name_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = delete_config_from_dir(dir.path(), "bad/name").unwrap_err();
+        assert!(err.contains("Invalid configuration name"));
+    }
+
+    #[test]
+    fn load_config_with_invalid_json_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Broken.json"), "not valid json").unwrap();
+        let err = load_config_from_dir(dir.path(), "Broken").unwrap_err();
+        assert!(err.contains("Failed to parse config"));
+    }
+
+    #[test]
+    fn list_skips_json_files_with_unsanitizable_names() {
+        let dir = tempfile::tempdir().unwrap();
+        // Stem "config!" fails sanitize_name → filtered out via _ => None
+        std::fs::write(dir.path().join("config!.json"), "{}").unwrap();
+        write_config_to_dir(dir.path(), &sample_config("Good")).unwrap();
+        let names = list_configs_in_dir(dir.path()).unwrap();
+        assert_eq!(names, vec!["Good"]);
+    }
 }

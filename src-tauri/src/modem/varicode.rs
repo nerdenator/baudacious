@@ -236,6 +236,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn varicode_decoder_default_matches_new() {
+        let a = VaricodeDecoder::new();
+        let b = VaricodeDecoder::default();
+        assert_eq!(a.bit_count, b.bit_count);
+        assert_eq!(a.bit_buffer, b.bit_buffer);
+        assert_eq!(a.consecutive_zeros, b.consecutive_zeros);
+    }
+
+    #[test]
     fn test_encode_common_chars() {
         assert_eq!(Varicode::encode(' '), Some("1"));
         assert_eq!(Varicode::encode('e'), Some("11"));

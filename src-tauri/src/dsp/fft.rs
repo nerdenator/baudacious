@@ -73,6 +73,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fft_size_getter_returns_constructor_value() {
+        let proc = FftProcessor::new(2048);
+        assert_eq!(proc.fft_size(), 2048);
+    }
+
+    #[test]
+    fn fft_size_getter_small() {
+        let proc = FftProcessor::new(64);
+        assert_eq!(proc.fft_size(), 64);
+    }
+
+    #[test]
     fn test_fft_pure_tone() {
         let mut processor = FftProcessor::new(1024);
         let sample_rate = 48000.0;

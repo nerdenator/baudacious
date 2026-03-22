@@ -632,6 +632,39 @@ mod tests {
         assert_eq!(level, 0.0, "signal strength at zero should be 0.0");
     }
 
+    // --- Unexpected response type → Err paths ---
+
+    #[test]
+    fn get_frequency_unexpected_response_is_err() {
+        // Returning ";" gives CatResponse::Ack, not FrequencyHz → triggers _ => Err
+        let (mut radio, _) = make_radio(";");
+        assert!(radio.get_frequency().is_err());
+    }
+
+    #[test]
+    fn get_mode_unexpected_response_is_err() {
+        let (mut radio, _) = make_radio(";");
+        assert!(radio.get_mode().is_err());
+    }
+
+    #[test]
+    fn get_tx_power_unexpected_response_is_err() {
+        let (mut radio, _) = make_radio(";");
+        assert!(radio.get_tx_power().is_err());
+    }
+
+    #[test]
+    fn get_signal_strength_unexpected_response_is_err() {
+        let (mut radio, _) = make_radio(";");
+        assert!(radio.get_signal_strength().is_err());
+    }
+
+    #[test]
+    fn get_status_unexpected_response_is_err() {
+        let (mut radio, _) = make_radio(";");
+        assert!(radio.get_status().is_err());
+    }
+
     // --- set_frequency covers every band via BS; code ---
 
     #[test]

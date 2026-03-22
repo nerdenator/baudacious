@@ -109,6 +109,19 @@ mod tests {
     use crate::adapters::mock_radio::MockRadio;
 
     #[test]
+    fn connect_corrects_wrong_mode_on_connect() {
+        // MockRadio starts at 14.070 MHz DATA-USB. Override mode to USB (wrong for 20m)
+        // so connect_serial_inner exercises the mode-correction branch.
+        let state = AppState::new();
+        let mut mock = MockRadio::new();
+        mock.set_mode("USB").unwrap();
+        let radio: Box<dyn RadioControl> = Box::new(mock);
+        let info = connect_serial_inner(&state, "mock".to_string(), 38400, radio).unwrap();
+        // connect_serial_inner should have corrected USB → DATA-USB
+        assert_eq!(info.mode, "DATA-USB");
+    }
+
+    #[test]
     fn connect_with_mock_radio_returns_info() {
         let state = AppState::new();
         let radio: Box<dyn RadioControl> = Box::new(MockRadio::new());

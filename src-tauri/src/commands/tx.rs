@@ -135,17 +135,13 @@ pub fn start_tx(
     Ok(())
 }
 
-#[tauri::command]
-pub fn stop_tx(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    // Signal abort
+fn stop_tx_inner(state: &AppState) -> Result<(), String> {
     state.tx_abort.store(true, Ordering::SeqCst);
 
-    // Join the thread
     if let Some(handle) = state.tx_thread.lock().unwrap().take() {
         handle.join().map_err(|_| "TX thread panicked".to_string())?;
     }
 
-    // PTT OFF (ignore errors if no radio)
     let ptt_result = state
         .radio
         .lock()
@@ -157,6 +153,11 @@ pub fn stop_tx(state: tauri::State<'_, AppState>) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub fn stop_tx(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    stop_tx_inner(&state)
 }
 
 #[tauri::command]
@@ -192,15 +193,13 @@ pub fn start_tune(
     Ok(())
 }
 
-#[tauri::command]
-pub fn stop_tune(state: tauri::State<'_, AppState>) -> Result<(), String> {
+fn stop_tune_inner(state: &AppState) -> Result<(), String> {
     state.tx_abort.store(true, Ordering::SeqCst);
 
     if let Some(handle) = state.tx_thread.lock().unwrap().take() {
         handle.join().map_err(|_| "Tune thread panicked".to_string())?;
     }
 
-    // Restore the configured TX power now that tune is done
     let configured_watts = state.config.lock().unwrap().tx_power_watts;
     if let Ok(mut guard) = state.radio.lock() {
         if let Some(radio) = guard.as_mut() {
@@ -214,6 +213,11 @@ pub fn stop_tune(state: tauri::State<'_, AppState>) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub fn stop_tune(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    stop_tune_inner(&state)
 }
 
 /// Tune thread: transmits a continuous sine wave at the carrier frequency until aborted.
@@ -447,6 +451,7 @@ fn run_tx_thread(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapters::mock_radio::MockRadio;
     use crate::domain::{Frequency, Psk31Error, Psk31Result, RadioStatus};
     use crate::ports::RadioControl;
 
@@ -623,6 +628,66 @@ mod tests {
         ensure_data_mode(&mut mock); // must not panic
         // set_mode was attempted
         assert_eq!(mock.set_mode_called_with.as_deref(), Some("DATA-USB"));
+    }
+
+    // -----------------------------------------------------------------------
+    // stop_tx_inner
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn stop_tx_inner_no_thread_no_radio_ok() {
+        let state = AppState::new();
+        // No thread, no radio — should just set abort flag and return Ok
+        stop_tx_inner(&state).unwrap();
+        assert!(state.tx_abort.load(Ordering::SeqCst), "abort flag must be set");
+    }
+
+    #[test]
+    fn stop_tx_inner_calls_ptt_off_when_radio_present() {
+        let state = AppState::new();
+        *state.radio.lock().unwrap() = Some(Box::new(MockRadio::new()));
+        // ptt_off() is called inside stop_tx_inner; MockRadio accepts it without error
+        stop_tx_inner(&state).unwrap();
+    }
+
+    #[test]
+    fn stop_tx_inner_joins_thread() {
+        let state = AppState::new();
+        let handle = thread::spawn(|| {});
+        *state.tx_thread.lock().unwrap() = Some(handle);
+        stop_tx_inner(&state).unwrap();
+        // Thread handle was consumed
+        assert!(state.tx_thread.lock().unwrap().is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // stop_tune_inner
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn stop_tune_inner_no_thread_no_radio_ok() {
+        let state = AppState::new();
+        stop_tune_inner(&state).unwrap();
+        assert!(state.tx_abort.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn stop_tune_inner_calls_ptt_off_and_restores_tx_power() {
+        let state = AppState::new();
+        state.config.lock().unwrap().tx_power_watts = 50;
+        // MockRadio accepts ptt_off() and set_tx_power() without error
+        *state.radio.lock().unwrap() = Some(Box::new(MockRadio::new()));
+        stop_tune_inner(&state).unwrap();
+        // Verify the inner function covered the radio-present branch (no panic = pass)
+    }
+
+    #[test]
+    fn stop_tune_inner_joins_thread() {
+        let state = AppState::new();
+        let handle = thread::spawn(|| {});
+        *state.tx_thread.lock().unwrap() = Some(handle);
+        stop_tune_inner(&state).unwrap();
+        assert!(state.tx_thread.lock().unwrap().is_none());
     }
 
     #[test]

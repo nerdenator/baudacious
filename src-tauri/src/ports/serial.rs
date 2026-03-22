@@ -37,3 +37,39 @@ pub trait SerialConnection: Send {
     /// Check if the port is still connected
     fn is_connected(&self) -> bool;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::Psk31Result;
+
+    struct EchoSerial {
+        response: Vec<u8>,
+    }
+
+    impl SerialConnection for EchoSerial {
+        fn write(&mut self, data: &[u8]) -> Psk31Result<usize> {
+            Ok(data.len())
+        }
+        fn read(&mut self, buf: &mut [u8]) -> Psk31Result<usize> {
+            let n = self.response.len().min(buf.len());
+            buf[..n].copy_from_slice(&self.response[..n]);
+            Ok(n)
+        }
+        fn close(&mut self) -> Psk31Result<()> {
+            Ok(())
+        }
+        fn is_connected(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn write_read_combines_write_and_read() {
+        let mut serial = EchoSerial { response: b"FA00014070000;".to_vec() };
+        let mut buf = [0u8; 64];
+        let n = serial.write_read("FA;", &mut buf).unwrap();
+        assert!(n > 0);
+        assert_eq!(&buf[..n], b"FA00014070000;");
+    }
+}
