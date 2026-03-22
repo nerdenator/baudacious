@@ -224,10 +224,13 @@ mod tests {
         let mut costas = CostasLoop::new(1000.0, 48000.0, 2.0);
         costas.set_frequency(1500.0);
         // Assert directly that the NCO was updated to the new frequency.
-        assert_eq!(
-            costas.nco.frequency(),
-            1500.0,
-            "set_frequency should update the internal NCO to 1500 Hz"
+        // Use epsilon comparison: frequency() computes phase_increment * sample_rate / (2π),
+        // and the inverse of set_frequency's 2π * freq / sample_rate, so a tiny rounding
+        // error is possible in IEEE 754.
+        let freq = costas.nco.frequency();
+        assert!(
+            (freq - 1500.0).abs() < 1e-6,
+            "set_frequency should update the internal NCO to 1500 Hz (got {freq})"
         );
     }
 

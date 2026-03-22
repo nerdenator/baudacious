@@ -20,10 +20,25 @@ pub struct ConnectionStatus {
 /// Pure helper that reads `AppState` without requiring Tauri's `State` wrapper.
 /// Extracted so it can be unit-tested directly.
 fn connection_status_from_state(state: &AppState) -> ConnectionStatus {
-    let serial_connected = state.radio.lock().map(|g| g.is_some()).unwrap_or(false);
-    let serial_port = state.serial_port_name.lock().map(|g| g.clone()).unwrap_or(None);
+    // Use into_inner() on poison so we report best-known state rather than a
+    // misleading default (e.g. showing "disconnected" when the radio is actually
+    // connected but the mutex was poisoned by a prior panic).
+    let serial_connected = state
+        .radio
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some();
+    let serial_port = state
+        .serial_port_name
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let audio_streaming = state.audio_running.load(Ordering::SeqCst);
-    let audio_device = state.audio_device_name.lock().map(|g| g.clone()).unwrap_or(None);
+    let audio_device = state
+        .audio_device_name
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
 
     ConnectionStatus {
         serial_connected,
