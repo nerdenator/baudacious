@@ -223,19 +223,12 @@ mod tests {
     fn test_set_frequency_updates_nco() {
         let mut costas = CostasLoop::new(1000.0, 48000.0, 2.0);
         costas.set_frequency(1500.0);
-        // After set_frequency, the NCO inside should track at 1500 Hz.
-        // We verify indirectly: process a 1500 Hz tone and confirm the loop
-        // produces non-zero output (it has signal to work with).
-        let mut any_nonzero = false;
-        for i in 0..1000 {
-            let sample = (2.0 * PI * 1500.0 * i as f64 / 48000.0).cos() as f32;
-            let out = costas.process(sample);
-            if out.abs() > 0.001 {
-                any_nonzero = true;
-                break;
-            }
-        }
-        assert!(any_nonzero, "set_frequency(1500) should allow loop to demodulate a 1500 Hz tone");
+        // Assert directly that the NCO was updated to the new frequency.
+        assert_eq!(
+            costas.nco.frequency(),
+            1500.0,
+            "set_frequency should update the internal NCO to 1500 Hz"
+        );
     }
 
     #[test]

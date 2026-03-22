@@ -62,12 +62,18 @@ fn connect_serial_inner(
     // Store radio in app state, then release the guard before locking serial_port_name
     // to avoid holding two MutexGuards simultaneously.
     {
-        let mut radio_slot =
-            state.radio.lock().map_err(|_| "Radio state corrupted".to_string())?;
+        let mut radio_slot = state
+            .radio
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         *radio_slot = Some(radio);
     }
-    *state.serial_port_name.lock().map_err(|_| "Serial port state corrupted".to_string())? =
-        Some(display_port);
+    // Use into_inner() on poison so the port name is always recorded, keeping
+    // serial_port_name consistent with the radio slot we just set above.
+    *state
+        .serial_port_name
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(display_port);
 
     Ok(info)
 }
@@ -75,13 +81,14 @@ fn connect_serial_inner(
 /// Pure disconnect logic extracted from the Tauri command for testability.
 fn disconnect_serial_inner(state: &AppState) -> Result<(), String> {
     {
-        let mut radio_slot =
-            state.radio.lock().map_err(|_| "Radio state corrupted".to_string())?;
+        // Use into_inner() on poison so we still attempt to clear the radio slot
+        // even if a previous thread panicked while holding this lock.
+        let mut radio_slot = state.radio.lock().unwrap_or_else(|e| e.into_inner());
         // Drop will auto-release PTT if transmitting
         *radio_slot = None;
     } // radio guard released here before acquiring serial_port_name
-    *state.serial_port_name.lock().map_err(|_| "Serial port state corrupted".to_string())? =
-        None;
+    // Same best-effort clear: keep serial_port_name consistent with radio slot above.
+    *state.serial_port_name.lock().unwrap_or_else(|e| e.into_inner()) = None;
     Ok(())
 }
 
