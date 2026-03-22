@@ -139,14 +139,15 @@ fn stop_tx_inner(state: &AppState) -> Result<(), String> {
         handle.join().map_err(|_| "TX thread panicked".to_string())?;
     }
 
-    let ptt_result = state
-        .radio
-        .lock()
-        .ok()
-        .and_then(|mut guard| guard.as_mut().map(|r| r.ptt_off()));
-
-    if let Some(Err(e)) = ptt_result {
-        log::warn!("PTT OFF failed: {e}");
+    match state.radio.lock() {
+        Ok(mut guard) => {
+            if let Some(radio) = guard.as_mut() {
+                if let Err(e) = radio.ptt_off() {
+                    log::warn!("PTT OFF failed: {e}");
+                }
+            }
+        }
+        Err(_) => log::warn!("stop_tx: radio mutex poisoned, skipping PTT off"),
     }
 
     Ok(())

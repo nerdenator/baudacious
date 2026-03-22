@@ -59,9 +59,13 @@ fn connect_serial_inner(
         connected: true,
     };
 
-    // Store radio and port name in app state
-    let mut radio_slot = state.radio.lock().map_err(|_| "Radio state corrupted".to_string())?;
-    *radio_slot = Some(radio);
+    // Store radio in app state, then release the guard before locking serial_port_name
+    // to avoid holding two MutexGuards simultaneously.
+    {
+        let mut radio_slot =
+            state.radio.lock().map_err(|_| "Radio state corrupted".to_string())?;
+        *radio_slot = Some(radio);
+    }
     *state.serial_port_name.lock().map_err(|_| "Serial port state corrupted".to_string())? =
         Some(display_port);
 
