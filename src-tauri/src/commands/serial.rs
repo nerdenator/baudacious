@@ -65,7 +65,7 @@ fn connect_serial_inner(
         let mut radio_slot = state
             .radio
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(|e| { log::warn!("connect: radio mutex was poisoned; recovering state"); e.into_inner() });
         *radio_slot = Some(radio);
     }
     // Use into_inner() on poison so the port name is always recorded, keeping
@@ -73,7 +73,7 @@ fn connect_serial_inner(
     *state
         .serial_port_name
         .lock()
-        .unwrap_or_else(|e| e.into_inner()) = Some(display_port);
+        .unwrap_or_else(|e| { log::warn!("connect: serial_port_name mutex was poisoned; recovering state"); e.into_inner() }) = Some(display_port);
 
     Ok(info)
 }
@@ -83,12 +83,12 @@ fn disconnect_serial_inner(state: &AppState) -> Result<(), String> {
     {
         // Use into_inner() on poison so we still attempt to clear the radio slot
         // even if a previous thread panicked while holding this lock.
-        let mut radio_slot = state.radio.lock().unwrap_or_else(|e| e.into_inner());
+        let mut radio_slot = state.radio.lock().unwrap_or_else(|e| { log::warn!("disconnect: radio mutex was poisoned; recovering state"); e.into_inner() });
         // Drop will auto-release PTT if transmitting
         *radio_slot = None;
     } // radio guard released here before acquiring serial_port_name
     // Same best-effort clear: keep serial_port_name consistent with radio slot above.
-    *state.serial_port_name.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *state.serial_port_name.lock().unwrap_or_else(|e| { log::warn!("disconnect: serial_port_name mutex was poisoned; recovering state"); e.into_inner() }) = None;
     Ok(())
 }
 

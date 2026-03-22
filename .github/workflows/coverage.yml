@@ -57,7 +57,8 @@ jobs:
       - name: Enforce 80% line coverage gate
         run: |
           set -euo pipefail
-          # Re-use the already-instrumented binary from the lcov step (--no-run skips re-running tests)
+          # `cargo llvm-cov report` is a reporting-only subcommand: it reads the profdata
+          # written by the lcov step above and never re-runs tests.
           COVERAGE=$(cargo llvm-cov report --json --summary-only \
             | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['data'][0]['totals']['lines']['percent'])")
           if [ -z "${COVERAGE}" ]; then

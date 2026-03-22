@@ -26,18 +26,18 @@ fn connection_status_from_state(state: &AppState) -> ConnectionStatus {
     let serial_connected = state
         .radio
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(|e| { log::warn!("status: radio mutex was poisoned; reporting best-known state"); e.into_inner() })
         .is_some();
     let serial_port = state
         .serial_port_name
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(|e| { log::warn!("status: serial_port_name mutex was poisoned; reporting best-known state"); e.into_inner() })
         .clone();
     let audio_streaming = state.audio_running.load(Ordering::SeqCst);
     let audio_device = state
         .audio_device_name
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(|e| { log::warn!("status: audio_device_name mutex was poisoned; reporting best-known state"); e.into_inner() })
         .clone();
 
     ConnectionStatus {
