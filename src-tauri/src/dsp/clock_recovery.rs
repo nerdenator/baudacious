@@ -145,7 +145,7 @@ mod tests {
         // Feed alternating symbols perfectly timed
         for sym in 0..50 {
             let value: f32 = if sym % 2 == 0 { 1.0 } else { -1.0 };
-            for s in 0..sps as usize {
+            for _ in 0..sps as usize {
                 if let Some(_) = cr.process(value) {
                     omega_after = cr.omega;
                     decisions += 1;
