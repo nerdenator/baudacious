@@ -86,7 +86,13 @@ pub fn start_tx(
     text: String,
     device_id: String,
 ) -> Result<(), String> {
-    validate_tx_start(state.tx_thread.lock().unwrap().is_some())?;
+    validate_tx_start(
+        state
+            .tx_thread
+            .lock()
+            .map_err(|_| "TX thread state corrupted".to_string())?
+            .is_some(),
+    )?;
 
     // Read carrier frequency from config
     let carrier_freq = state.config.lock().unwrap().carrier_freq;
@@ -127,7 +133,11 @@ pub fn start_tx(
         })
     };
 
-    state.tx_thread.lock().unwrap().replace(handle);
+    state
+        .tx_thread
+        .lock()
+        .map_err(|_| "TX thread state corrupted".to_string())?
+        .replace(handle);
 
     Ok(())
 }
@@ -135,7 +145,12 @@ pub fn start_tx(
 fn stop_tx_inner(state: &AppState) -> Result<(), String> {
     state.tx_abort.store(true, Ordering::SeqCst);
 
-    if let Some(handle) = state.tx_thread.lock().unwrap().take() {
+    if let Some(handle) = state
+        .tx_thread
+        .lock()
+        .map_err(|_| "TX thread state corrupted".to_string())?
+        .take()
+    {
         handle.join().map_err(|_| "TX thread panicked".to_string())?;
     }
 
@@ -164,7 +179,13 @@ pub fn start_tune(
     state: tauri::State<'_, AppState>,
     device_id: String,
 ) -> Result<(), String> {
-    validate_tx_start(state.tx_thread.lock().unwrap().is_some())?;
+    validate_tx_start(
+        state
+            .tx_thread
+            .lock()
+            .map_err(|_| "TX thread state corrupted".to_string())?
+            .is_some(),
+    )?;
 
     let carrier_freq = state.config.lock().unwrap().carrier_freq;
     let sample_rate = state.config.lock().unwrap().sample_rate;
@@ -185,14 +206,23 @@ pub fn start_tune(
         run_tune_thread(app, abort, device_id, carrier_freq, f64::from(sample_rate));
     });
 
-    state.tx_thread.lock().unwrap().replace(handle);
+    state
+        .tx_thread
+        .lock()
+        .map_err(|_| "TX thread state corrupted".to_string())?
+        .replace(handle);
     Ok(())
 }
 
 fn stop_tune_inner(state: &AppState) -> Result<(), String> {
     state.tx_abort.store(true, Ordering::SeqCst);
 
-    if let Some(handle) = state.tx_thread.lock().unwrap().take() {
+    if let Some(handle) = state
+        .tx_thread
+        .lock()
+        .map_err(|_| "TX thread state corrupted".to_string())?
+        .take()
+    {
         handle.join().map_err(|_| "Tune thread panicked".to_string())?;
     }
 
