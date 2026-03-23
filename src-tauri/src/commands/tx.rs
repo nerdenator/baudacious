@@ -10,6 +10,22 @@
 //!    - Deactivates PTT on both abort and complete paths
 //!    - Emits a `tx-status: complete` or `tx-status: aborted` event
 //! 3. stop_tx signals abort and calls PTT OFF as a belt-and-suspenders safety net
+//!
+//! ## Concurrency model
+//!
+//! `AppState.tx_state` (a `Mutex<TxState>`) guards the TX pipeline lifecycle:
+//!
+//! - `Idle`            — no TX, safe to start
+//! - `Starting`        — claimed by a start call; slow work (encode, serial I/O) in progress
+//! - `Running(handle)` — thread live, handle stored
+//!
+//! start_tx/start_tune hold the lock for only two brief critical sections:
+//!   1. Claim: `Idle → Starting` + reset tx_abort (atomic, no I/O)
+//!   2. Activate: `Starting → Running(handle)` after spawn
+//!
+//! stop_tx/stop_tune can therefore acquire the lock immediately (even during slow
+//! work), set tx_abort=true, and transition state back to Idle without waiting for
+//! serial round-trips to complete.
 
 use serde::Serialize;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -23,7 +39,7 @@ use crate::commands::radio::with_radio;
 use crate::domain::data_mode_for_frequency;
 use crate::modem::encoder::Psk31Encoder;
 use crate::ports::{AudioOutput, RadioControl};
-use crate::state::AppState;
+use crate::state::{AppState, TxState};
 
 /// Query the radio's current frequency and mode; if the mode is not the correct
 /// DATA variant for that frequency, correct it.
@@ -61,15 +77,13 @@ fn ensure_data_mode(radio: &mut dyn RadioControl) {
 
 /// Pure validation for `start_tx` / `start_tune` — no I/O, fully unit-testable.
 ///
-/// Arguments:
-/// - `is_transmitting`: `true` when a tx/tune thread is already running
-///
-/// Returns `Err` with a human-readable message when TX should be blocked.
-pub(crate) fn validate_tx_start(is_transmitting: bool) -> Result<(), String> {
-    if is_transmitting {
-        return Err("Already transmitting".into());
+/// Returns `Err` if the state machine is not `Idle` (i.e., TX is already in
+/// progress or being set up).
+pub(crate) fn validate_tx_state(tx: &TxState) -> Result<(), String> {
+    match tx {
+        TxState::Idle => Ok(()),
+        _ => Err("Already transmitting".into()),
     }
-    Ok(())
 }
 
 /// Payload for `tx-status` events sent to the frontend
@@ -86,33 +100,37 @@ pub fn start_tx(
     text: String,
     device_id: String,
 ) -> Result<(), String> {
-    // Acquire the guard once and keep it held so that the check-then-set is
-    // atomic: no concurrent start_tx/start_tune call can pass the guard test
-    // and overwrite the handle before we store ours.
-    let mut tx_guard = state
-        .tx_thread
-        .lock()
-        .map_err(|_| "TX thread state corrupted".to_string())?;
-    validate_tx_start(tx_guard.is_some())?;
+    // ── Critical section 1: claim + reset abort ───────────────────────────────
+    // Both operations happen under the lock so a concurrent stop_tx that sets
+    // tx_abort=true cannot have its signal erased by our reset.
+    {
+        let mut tx = state
+            .tx_state
+            .lock()
+            .map_err(|_| "TX state corrupted".to_string())?;
+        validate_tx_state(&tx)?;
+        state.tx_abort.store(false, Ordering::SeqCst);
+        *tx = TxState::Starting;
+    }
 
-    // Read carrier frequency from config
+    // ── Slow work (lock-free) ─────────────────────────────────────────────────
+    // stop_tx can now acquire tx_state immediately and set tx_abort=true.
+
     let carrier_freq = state.config.lock().unwrap().carrier_freq;
     let sample_rate = state.config.lock().unwrap().sample_rate;
+    let target_watts = state.config.lock().unwrap().tx_power_watts;
 
-    // Encode the entire message upfront
     let encoder = Psk31Encoder::new(sample_rate, carrier_freq);
     let samples = encoder.encode(&text);
 
     if samples.is_empty() {
+        *state
+            .tx_state
+            .lock()
+            .map_err(|_| "TX state corrupted".to_string())? = TxState::Idle;
         return Err("Nothing to transmit".into());
     }
 
-    // Reset abort flag
-    let abort = state.tx_abort.clone();
-    abort.store(false, Ordering::SeqCst);
-
-    // Verify DATA mode and set TX power (both non-fatal; auto-disconnects on serial error)
-    let target_watts = state.config.lock().unwrap().tx_power_watts;
     let _ = with_radio(&state, &app, |radio| {
         ensure_data_mode(radio.as_mut());
         if let Err(e) = radio.set_tx_power(target_watts) {
@@ -121,36 +139,64 @@ pub fn start_tx(
         Ok(())
     });
 
-    // Shared playback position for progress tracking
+    // ── Abort check ───────────────────────────────────────────────────────────
+    // If stop_tx fired during slow work it set tx_abort=true. Cancel cleanly.
+    if state.tx_abort.load(Ordering::SeqCst) {
+        *state
+            .tx_state
+            .lock()
+            .map_err(|_| "TX state corrupted".to_string())? = TxState::Idle;
+        let _ = app.emit(
+            "tx-status",
+            TxStatusPayload { status: "aborted".into(), progress: 0.0 },
+        );
+        return Err("Cancelled before transmitting".into());
+    }
+
+    // ── Spawn ─────────────────────────────────────────────────────────────────
+    let abort = state.tx_abort.clone();
     let play_pos = Arc::new(AtomicUsize::new(0));
     let total_samples = samples.len();
 
     let handle = {
         let abort = abort.clone();
         let play_pos = play_pos.clone();
-
         thread::spawn(move || {
             run_tx_thread(app, abort, play_pos, samples, device_id, total_samples);
         })
     };
 
-    // Store handle while still holding the guard — closes the TOCTOU window
-    tx_guard.replace(handle);
+    // ── Critical section 2: activate ─────────────────────────────────────────
+    // If stop_tx raced between the abort check and here, state is already Idle.
+    // The spawned thread will see tx_abort=true and exit on its own.
+    {
+        let mut tx = state
+            .tx_state
+            .lock()
+            .map_err(|_| "TX state corrupted".to_string())?;
+        if matches!(*tx, TxState::Starting) {
+            *tx = TxState::Running(handle);
+        }
+        // else: stop_tx already reset to Idle; thread self-exits via abort flag.
+    }
 
     Ok(())
 }
 
 fn stop_tx_inner(state: &AppState) -> Result<(), String> {
-    // Lock first, then set abort — prevents start_tx (which holds tx_thread while
-    // clearing tx_abort) from resetting our abort signal before we can join.
+    // Lock first, set abort, take handle — all under the same guard so that
+    // start_tx (which resets tx_abort=false inside the lock) cannot race with us.
     let handle = {
-        let mut guard = state
-            .tx_thread
+        let mut tx = state
+            .tx_state
             .lock()
-            .map_err(|_| "TX thread state corrupted".to_string())?;
+            .map_err(|_| "TX state corrupted".to_string())?;
         state.tx_abort.store(true, Ordering::SeqCst);
-        guard.take()
-    }; // guard released before join to avoid deadlock with run_tx_thread's try_lock
+        match std::mem::replace(&mut *tx, TxState::Idle) {
+            TxState::Running(h) => Some(h),
+            _ => None, // Idle or Starting — abort flag is sufficient
+        }
+    }; // lock released before join to avoid deadlock with run_tx_thread's try_lock
 
     if let Some(handle) = handle {
         handle.join().map_err(|_| "TX thread panicked".to_string())?;
@@ -181,19 +227,20 @@ pub fn start_tune(
     state: tauri::State<'_, AppState>,
     device_id: String,
 ) -> Result<(), String> {
-    // Acquire guard once: atomic check-then-set prevents concurrent start_tune calls
-    // from both passing the guard test and overwriting each other's handles.
-    let mut tx_guard = state
-        .tx_thread
-        .lock()
-        .map_err(|_| "TX thread state corrupted".to_string())?;
-    validate_tx_start(tx_guard.is_some())?;
+    // ── Critical section 1: claim + reset abort ───────────────────────────────
+    {
+        let mut tx = state
+            .tx_state
+            .lock()
+            .map_err(|_| "TX state corrupted".to_string())?;
+        validate_tx_state(&tx)?;
+        state.tx_abort.store(false, Ordering::SeqCst);
+        *tx = TxState::Starting;
+    }
 
+    // ── Slow work (lock-free) ─────────────────────────────────────────────────
     let carrier_freq = state.config.lock().unwrap().carrier_freq;
     let sample_rate = state.config.lock().unwrap().sample_rate;
-
-    let abort = state.tx_abort.clone();
-    abort.store(false, Ordering::SeqCst);
 
     // Tune always uses 10W regardless of the configured TX power setting
     let _ = with_radio(&state, &app, |radio| {
@@ -204,26 +251,52 @@ pub fn start_tune(
         Ok(())
     });
 
+    // ── Abort check ───────────────────────────────────────────────────────────
+    if state.tx_abort.load(Ordering::SeqCst) {
+        *state
+            .tx_state
+            .lock()
+            .map_err(|_| "TX state corrupted".to_string())? = TxState::Idle;
+        let _ = app.emit(
+            "tx-status",
+            TxStatusPayload { status: "aborted".into(), progress: 0.0 },
+        );
+        return Err("Cancelled before transmitting".into());
+    }
+
+    // ── Spawn ─────────────────────────────────────────────────────────────────
+    let abort = state.tx_abort.clone();
+
     let handle = thread::spawn(move || {
         run_tune_thread(app, abort, device_id, carrier_freq, f64::from(sample_rate));
     });
 
-    // Store handle while still holding the guard — closes the TOCTOU window
-    tx_guard.replace(handle);
+    // ── Critical section 2: activate ─────────────────────────────────────────
+    {
+        let mut tx = state
+            .tx_state
+            .lock()
+            .map_err(|_| "TX state corrupted".to_string())?;
+        if matches!(*tx, TxState::Starting) {
+            *tx = TxState::Running(handle);
+        }
+    }
+
     Ok(())
 }
 
 fn stop_tune_inner(state: &AppState) -> Result<(), String> {
-    // Lock first, then set abort — same ordering as stop_tx_inner to prevent
-    // start_tune from resetting tx_abort=false while we're trying to stop.
     let handle = {
-        let mut guard = state
-            .tx_thread
+        let mut tx = state
+            .tx_state
             .lock()
-            .map_err(|_| "TX thread state corrupted".to_string())?;
+            .map_err(|_| "TX state corrupted".to_string())?;
         state.tx_abort.store(true, Ordering::SeqCst);
-        guard.take()
-    }; // guard released before join
+        match std::mem::replace(&mut *tx, TxState::Idle) {
+            TxState::Running(h) => Some(h),
+            _ => None,
+        }
+    }; // lock released before join
 
     if let Some(handle) = handle {
         handle.join().map_err(|_| "Tune thread panicked".to_string())?;
@@ -384,7 +457,6 @@ fn run_tx_thread(
             let remaining = total_samples.saturating_sub(current_pos);
 
             if remaining == 0 {
-                // Fill with silence — we're done
                 for sample in output_buf.iter_mut() {
                     *sample = 0.0;
                 }
@@ -396,7 +468,6 @@ fn run_tx_thread(
             output_buf[..copy_len]
                 .copy_from_slice(&samples_for_callback[current_pos..current_pos + copy_len]);
 
-            // Fill any remaining buffer with silence
             for sample in output_buf[copy_len..].iter_mut() {
                 *sample = 0.0;
             }
@@ -429,7 +500,6 @@ fn run_tx_thread(
                 },
             );
 
-            // PTT OFF — deactivate before returning
             if let Ok(mut guard) = radio_state.radio.lock() {
                 if let Some(radio) = guard.as_mut() {
                     if let Err(e) = radio.ptt_off() {
@@ -441,13 +511,10 @@ fn run_tx_thread(
         }
 
         if done_flag.load(Ordering::SeqCst) {
-            // Brief wait for the audio device to clock out its current buffer
             thread::sleep(Duration::from_millis(30));
             let _ = audio_output.stop();
 
             // Emit complete BEFORE PTT OFF — UI resets with zero IPC latency.
-            // The frontend onComplete handler needs no follow-up invoke() call
-            // because we self-clear the thread handle here with try_lock.
             let _ = app.emit(
                 "tx-status",
                 TxStatusPayload {
@@ -457,14 +524,13 @@ fn run_tx_thread(
             );
 
             // Self-clear our handle from AppState so start_tx works immediately.
-            // Use try_lock to avoid deadlock if stop_tx holds the lock concurrently
-            // (in that case stop_tx will clear the handle itself via join).
-            if let Ok(mut guard) = radio_state.tx_thread.try_lock() {
-                let _ = guard.take();
+            // Use try_lock to avoid deadlock if stop_tx holds the lock concurrently.
+            if let Ok(mut tx) = radio_state.tx_state.try_lock() {
+                if matches!(*tx, TxState::Running(_)) {
+                    *tx = TxState::Idle;
+                }
             }
 
-            // PTT OFF after the emit — audio is already silent, holding key
-            // for ~50–100ms more is harmless for PSK-31.
             if let Ok(mut guard) = radio_state.radio.lock() {
                 if let Some(radio) = guard.as_mut() {
                     if let Err(e) = radio.ptt_off() {
@@ -488,41 +554,41 @@ mod tests {
     use crate::ports::RadioControl;
 
     // -----------------------------------------------------------------------
-    // validate_tx_start
+    // validate_tx_state
     // -----------------------------------------------------------------------
 
     #[test]
-    fn validate_tx_start_ok_when_not_transmitting() {
-        assert!(validate_tx_start(false).is_ok());
+    fn validate_tx_state_ok_when_idle() {
+        assert!(validate_tx_state(&TxState::Idle).is_ok());
     }
 
     #[test]
-    fn validate_tx_start_err_when_already_transmitting() {
-        let err = validate_tx_start(true).unwrap_err();
+    fn validate_tx_state_err_when_starting() {
+        let err = validate_tx_state(&TxState::Starting).unwrap_err();
+        assert_eq!(err, "Already transmitting");
+    }
+
+    #[test]
+    fn validate_tx_state_err_when_running() {
+        let handle = thread::spawn(|| {});
+        let err = validate_tx_state(&TxState::Running(handle)).unwrap_err();
         assert_eq!(err, "Already transmitting");
     }
 
     // -----------------------------------------------------------------------
-    // ensure_data_mode — uses an inline configurable mock
+    // ensure_data_mode
     // -----------------------------------------------------------------------
 
-    /// Controls what the mock radio returns for get_frequency / get_mode /
-    /// set_mode so we can exercise every branch of ensure_data_mode.
     struct ModeMock {
         freq_hz: f64,
         current_mode: String,
-        /// If Some, get_frequency() returns this error instead of freq_hz
         freq_err: Option<String>,
-        /// If Some, get_mode() returns this error instead of current_mode
         mode_err: Option<String>,
-        /// If Some, set_mode() returns this error
         set_mode_err: Option<String>,
-        /// Records the last mode passed to set_mode()
         set_mode_called_with: Option<String>,
     }
 
     impl ModeMock {
-        /// Radio on 20m in the correct DATA-USB mode already
         fn correct_mode() -> Self {
             Self {
                 freq_hz: 14_070_000.0,
@@ -533,8 +599,6 @@ mod tests {
                 set_mode_called_with: None,
             }
         }
-
-        /// Radio on 20m but in plain USB — needs correction to DATA-USB
         fn wrong_mode() -> Self {
             Self {
                 freq_hz: 14_070_000.0,
@@ -545,8 +609,6 @@ mod tests {
                 set_mode_called_with: None,
             }
         }
-
-        /// get_frequency() will fail
         fn freq_error() -> Self {
             Self {
                 freq_hz: 0.0,
@@ -557,8 +619,6 @@ mod tests {
                 set_mode_called_with: None,
             }
         }
-
-        /// get_mode() will fail
         fn mode_read_error() -> Self {
             Self {
                 freq_hz: 14_070_000.0,
@@ -569,8 +629,6 @@ mod tests {
                 set_mode_called_with: None,
             }
         }
-
-        /// set_mode() will fail
         fn set_mode_error() -> Self {
             Self {
                 freq_hz: 14_070_000.0,
@@ -627,7 +685,6 @@ mod tests {
     fn ensure_data_mode_noop_when_already_correct() {
         let mut mock = ModeMock::correct_mode();
         ensure_data_mode(&mut mock);
-        // set_mode should NOT have been called
         assert!(mock.set_mode_called_with.is_none());
     }
 
@@ -640,7 +697,6 @@ mod tests {
 
     #[test]
     fn ensure_data_mode_skips_on_freq_read_error() {
-        // Non-fatal — should return without panicking and without calling set_mode
         let mut mock = ModeMock::freq_error();
         ensure_data_mode(&mut mock);
         assert!(mock.set_mode_called_with.is_none());
@@ -655,76 +711,13 @@ mod tests {
 
     #[test]
     fn ensure_data_mode_tolerates_set_mode_failure() {
-        // set_mode fails — ensure_data_mode should return without panicking
         let mut mock = ModeMock::set_mode_error();
-        ensure_data_mode(&mut mock); // must not panic
-        // set_mode was attempted
+        ensure_data_mode(&mut mock);
         assert_eq!(mock.set_mode_called_with.as_deref(), Some("DATA-USB"));
-    }
-
-    // -----------------------------------------------------------------------
-    // stop_tx_inner
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn stop_tx_inner_no_thread_no_radio_ok() {
-        let state = AppState::new();
-        // No thread, no radio — should just set abort flag and return Ok
-        stop_tx_inner(&state).unwrap();
-        assert!(state.tx_abort.load(Ordering::SeqCst), "abort flag must be set");
-    }
-
-    #[test]
-    fn stop_tx_inner_calls_ptt_off_when_radio_present() {
-        let state = AppState::new();
-        *state.radio.lock().unwrap() = Some(Box::new(MockRadio::new()));
-        // ptt_off() is called inside stop_tx_inner; MockRadio accepts it without error
-        stop_tx_inner(&state).unwrap();
-    }
-
-    #[test]
-    fn stop_tx_inner_joins_thread() {
-        let state = AppState::new();
-        let handle = thread::spawn(|| {});
-        *state.tx_thread.lock().unwrap() = Some(handle);
-        stop_tx_inner(&state).unwrap();
-        // Thread handle was consumed
-        assert!(state.tx_thread.lock().unwrap().is_none());
-    }
-
-    // -----------------------------------------------------------------------
-    // stop_tune_inner
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn stop_tune_inner_no_thread_no_radio_ok() {
-        let state = AppState::new();
-        stop_tune_inner(&state).unwrap();
-        assert!(state.tx_abort.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn stop_tune_inner_calls_ptt_off_and_restores_tx_power() {
-        let state = AppState::new();
-        state.config.lock().unwrap().tx_power_watts = 50;
-        // MockRadio accepts ptt_off() and set_tx_power() without error
-        *state.radio.lock().unwrap() = Some(Box::new(MockRadio::new()));
-        stop_tune_inner(&state).unwrap();
-        // Verify the inner function covered the radio-present branch (no panic = pass)
-    }
-
-    #[test]
-    fn stop_tune_inner_joins_thread() {
-        let state = AppState::new();
-        let handle = thread::spawn(|| {});
-        *state.tx_thread.lock().unwrap() = Some(handle);
-        stop_tune_inner(&state).unwrap();
-        assert!(state.tx_thread.lock().unwrap().is_none());
     }
 
     #[test]
     fn ensure_data_mode_lsb_below_10mhz() {
-        // 40m — expects DATA-LSB
         let mut mock = ModeMock {
             freq_hz: 7_074_000.0,
             current_mode: "USB".to_string(),
@@ -735,5 +728,79 @@ mod tests {
         };
         ensure_data_mode(&mut mock);
         assert_eq!(mock.set_mode_called_with.as_deref(), Some("DATA-LSB"));
+    }
+
+    // -----------------------------------------------------------------------
+    // stop_tx_inner
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn stop_tx_inner_when_idle_ok() {
+        let state = AppState::new();
+        stop_tx_inner(&state).unwrap();
+        assert!(state.tx_abort.load(Ordering::SeqCst), "abort flag must be set");
+        assert!(matches!(*state.tx_state.lock().unwrap(), TxState::Idle));
+    }
+
+    #[test]
+    fn stop_tx_inner_when_starting_sets_abort_and_idles() {
+        let state = AppState::new();
+        *state.tx_state.lock().unwrap() = TxState::Starting;
+        stop_tx_inner(&state).unwrap();
+        assert!(state.tx_abort.load(Ordering::SeqCst));
+        assert!(matches!(*state.tx_state.lock().unwrap(), TxState::Idle));
+    }
+
+    #[test]
+    fn stop_tx_inner_calls_ptt_off_when_radio_present() {
+        let state = AppState::new();
+        *state.radio.lock().unwrap() = Some(Box::new(MockRadio::new()));
+        stop_tx_inner(&state).unwrap();
+    }
+
+    #[test]
+    fn stop_tx_inner_joins_thread() {
+        let state = AppState::new();
+        let handle = thread::spawn(|| {});
+        *state.tx_state.lock().unwrap() = TxState::Running(handle);
+        stop_tx_inner(&state).unwrap();
+        assert!(matches!(*state.tx_state.lock().unwrap(), TxState::Idle));
+    }
+
+    // -----------------------------------------------------------------------
+    // stop_tune_inner
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn stop_tune_inner_when_idle_ok() {
+        let state = AppState::new();
+        stop_tune_inner(&state).unwrap();
+        assert!(state.tx_abort.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn stop_tune_inner_when_starting_sets_abort_and_idles() {
+        let state = AppState::new();
+        *state.tx_state.lock().unwrap() = TxState::Starting;
+        stop_tune_inner(&state).unwrap();
+        assert!(state.tx_abort.load(Ordering::SeqCst));
+        assert!(matches!(*state.tx_state.lock().unwrap(), TxState::Idle));
+    }
+
+    #[test]
+    fn stop_tune_inner_calls_ptt_off_and_restores_tx_power() {
+        let state = AppState::new();
+        state.config.lock().unwrap().tx_power_watts = 50;
+        *state.radio.lock().unwrap() = Some(Box::new(MockRadio::new()));
+        stop_tune_inner(&state).unwrap();
+    }
+
+    #[test]
+    fn stop_tune_inner_joins_thread() {
+        let state = AppState::new();
+        let handle = thread::spawn(|| {});
+        *state.tx_state.lock().unwrap() = TxState::Running(handle);
+        stop_tune_inner(&state).unwrap();
+        assert!(matches!(*state.tx_state.lock().unwrap(), TxState::Idle));
     }
 }
