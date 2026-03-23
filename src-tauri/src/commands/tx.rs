@@ -214,7 +214,7 @@ fn stop_tx_inner(state: &AppState) -> Result<(), String> {
             TxState::Running(h) => Some(h),
             _ => None, // Idle or Starting — abort flag is sufficient
         }
-    }; // lock released before join to avoid deadlock with run_tx_thread's try_lock
+    }; // lock released before join to avoid deadlock with run_tx_thread, which also locks tx_state
 
     if let Some(handle) = handle {
         handle.join().map_err(|_| "TX thread panicked".to_string())?;
@@ -583,8 +583,12 @@ mod tests {
     #[test]
     fn validate_tx_state_err_when_running() {
         let handle = thread::spawn(|| {});
-        let err = validate_tx_state(&TxState::Running(handle)).unwrap_err();
+        let state = TxState::Running(handle);
+        let err = validate_tx_state(&state).unwrap_err();
         assert_eq!(err, "Already transmitting");
+        if let TxState::Running(h) = state {
+            h.join().unwrap();
+        }
     }
 
     // -----------------------------------------------------------------------
