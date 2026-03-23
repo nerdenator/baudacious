@@ -122,8 +122,14 @@ pub(crate) fn tx_activate(state: &AppState, handle: JoinHandle<()>) -> Result<()
         .map_err(|_| "TX state corrupted".to_string())?;
     if matches!(*tx, TxState::Starting) {
         *tx = TxState::Running(handle);
+        return Ok(());
     }
-    Ok(())
+    // Cancellation path: stop_tx already reset state to Idle while we were
+    // doing slow work. Release the lock before joining so the thread can run
+    // its early-abort check and exit cleanly.
+    drop(tx);
+    let _ = handle.join();
+    Err("Cancelled before activation".to_string())
 }
 
 /// Payload for `tx-status` events sent to the frontend
@@ -194,8 +200,8 @@ pub fn start_tx(
     };
 
     // ── Critical section 2: activate ─────────────────────────────────────────
-    // If stop_tx raced between the abort check and here, state is already Idle.
-    // The spawned thread will see tx_abort=true and exit on its own.
+    // If stop_tx raced between the abort check and spawn, state is already Idle.
+    // tx_activate detects this, joins the (already-aborted) thread, and errors.
     tx_activate(&state, handle)?;
 
     Ok(())
@@ -281,6 +287,8 @@ pub fn start_tune(
     });
 
     // ── Critical section 2: activate ─────────────────────────────────────────
+    // If stop_tune raced between the abort check and spawn, state is already Idle.
+    // tx_activate detects this, joins the (already-aborted) thread, and errors.
     tx_activate(&state, handle)?;
 
     Ok(())
@@ -334,6 +342,16 @@ fn run_tune_thread(
     carrier_freq: f64,
     sample_rate: f64,
 ) {
+    // Early abort check: stop_tune may have fired between the pre-spawn abort
+    // check and tx_activate.  Check before keying the radio.
+    if abort.load(Ordering::SeqCst) {
+        let _ = app.emit(
+            "tx-status",
+            TxStatusPayload { status: "aborted".into(), progress: 0.0 },
+        );
+        return;
+    }
+
     let radio_state = app.state::<AppState>();
 
     // PTT ON
@@ -422,6 +440,16 @@ fn run_tx_thread(
     device_id: String,
     total_samples: usize,
 ) {
+    // Early abort check: stop_tx may have fired between the pre-spawn abort
+    // check and tx_activate.  Check before keying the radio.
+    if abort.load(Ordering::SeqCst) {
+        let _ = app.emit(
+            "tx-status",
+            TxStatusPayload { status: "aborted".into(), progress: 0.0 },
+        );
+        return;
+    }
+
     // Activate PTT at the top of the thread (before the settle delay)
     let radio_state = app.state::<AppState>();
     if let Ok(mut guard) = radio_state.radio.lock() {
@@ -654,13 +682,15 @@ mod tests {
     }
 
     #[test]
-    fn tx_activate_noop_when_already_idle() {
+    fn tx_activate_cancels_when_already_idle() {
         // Simulates the race where stop_tx reset state before activate ran.
+        // tx_activate must return Err and join the handle (not drop it detached).
         let state = AppState::new();
-        // state is Idle (not Starting) — activate should be a no-op, not panic
+        state.tx_abort.store(true, Ordering::SeqCst);
+        // state is Idle (not Starting)
         let handle = thread::spawn(|| {});
-        tx_activate(&state, handle).unwrap();
-        // State remains Idle (the spawned thread exits on its own via abort flag)
+        let result = tx_activate(&state, handle);
+        assert!(result.is_err(), "should return Err on cancellation path");
         assert!(matches!(*state.tx_state.lock().unwrap(), TxState::Idle));
     }
 
