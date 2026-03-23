@@ -30,7 +30,7 @@
 use serde::Serialize;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -86,6 +86,46 @@ pub(crate) fn validate_tx_state(tx: &TxState) -> Result<(), String> {
     }
 }
 
+/// Critical section 1 — atomically claim the TX slot.
+///
+/// Transitions `Idle → Starting` and resets `tx_abort`, all under the lock so
+/// a concurrent `stop_tx` that sets `tx_abort=true` cannot race with our reset.
+pub(crate) fn tx_claim(state: &AppState) -> Result<(), String> {
+    let mut tx = state
+        .tx_state
+        .lock()
+        .map_err(|_| "TX state corrupted".to_string())?;
+    validate_tx_state(&tx)?;
+    state.tx_abort.store(false, Ordering::SeqCst);
+    *tx = TxState::Starting;
+    Ok(())
+}
+
+/// Reset the TX slot to `Idle`.
+///
+/// Used on early-exit paths (empty samples, pre-spawn abort) where the claim
+/// succeeded but we need to give the slot back without joining any thread.
+/// Tolerates a poisoned mutex so the radio is never left stuck in `Starting`.
+pub(crate) fn tx_reset(state: &AppState) {
+    *state.tx_state.lock().unwrap_or_else(|e| e.into_inner()) = TxState::Idle;
+}
+
+/// Critical section 2 — activate the TX slot.
+///
+/// Transitions `Starting → Running(handle)`.  If `stop_tx` already reset the
+/// state to `Idle` while we were doing slow work, the `if` guard is false and
+/// the thread self-exits via the `tx_abort` flag.
+pub(crate) fn tx_activate(state: &AppState, handle: JoinHandle<()>) -> Result<(), String> {
+    let mut tx = state
+        .tx_state
+        .lock()
+        .map_err(|_| "TX state corrupted".to_string())?;
+    if matches!(*tx, TxState::Starting) {
+        *tx = TxState::Running(handle);
+    }
+    Ok(())
+}
+
 /// Payload for `tx-status` events sent to the frontend
 #[derive(Clone, Serialize)]
 struct TxStatusPayload {
@@ -101,17 +141,7 @@ pub fn start_tx(
     device_id: String,
 ) -> Result<(), String> {
     // ── Critical section 1: claim + reset abort ───────────────────────────────
-    // Both operations happen under the lock so a concurrent stop_tx that sets
-    // tx_abort=true cannot have its signal erased by our reset.
-    {
-        let mut tx = state
-            .tx_state
-            .lock()
-            .map_err(|_| "TX state corrupted".to_string())?;
-        validate_tx_state(&tx)?;
-        state.tx_abort.store(false, Ordering::SeqCst);
-        *tx = TxState::Starting;
-    }
+    tx_claim(&state)?;
 
     // ── Slow work (lock-free) ─────────────────────────────────────────────────
     // stop_tx can now acquire tx_state immediately and set tx_abort=true.
@@ -127,9 +157,7 @@ pub fn start_tx(
     let samples = encoder.encode(&text);
 
     if samples.is_empty() {
-        // Reset state on early exit — use into_inner() on poison so we always
-        // return to Idle even if a previous panic left the mutex poisoned.
-        *state.tx_state.lock().unwrap_or_else(|e| e.into_inner()) = TxState::Idle;
+        tx_reset(&state);
         return Err("Nothing to transmit".into());
     }
 
@@ -144,7 +172,7 @@ pub fn start_tx(
     // ── Abort check ───────────────────────────────────────────────────────────
     // If stop_tx fired during slow work it set tx_abort=true. Cancel cleanly.
     if state.tx_abort.load(Ordering::SeqCst) {
-        *state.tx_state.lock().unwrap_or_else(|e| e.into_inner()) = TxState::Idle;
+        tx_reset(&state);
         let _ = app.emit(
             "tx-status",
             TxStatusPayload { status: "aborted".into(), progress: 0.0 },
@@ -168,16 +196,7 @@ pub fn start_tx(
     // ── Critical section 2: activate ─────────────────────────────────────────
     // If stop_tx raced between the abort check and here, state is already Idle.
     // The spawned thread will see tx_abort=true and exit on its own.
-    {
-        let mut tx = state
-            .tx_state
-            .lock()
-            .map_err(|_| "TX state corrupted".to_string())?;
-        if matches!(*tx, TxState::Starting) {
-            *tx = TxState::Running(handle);
-        }
-        // else: stop_tx already reset to Idle; thread self-exits via abort flag.
-    }
+    tx_activate(&state, handle)?;
 
     Ok(())
 }
@@ -227,15 +246,7 @@ pub fn start_tune(
     device_id: String,
 ) -> Result<(), String> {
     // ── Critical section 1: claim + reset abort ───────────────────────────────
-    {
-        let mut tx = state
-            .tx_state
-            .lock()
-            .map_err(|_| "TX state corrupted".to_string())?;
-        validate_tx_state(&tx)?;
-        state.tx_abort.store(false, Ordering::SeqCst);
-        *tx = TxState::Starting;
-    }
+    tx_claim(&state)?;
 
     // ── Slow work (lock-free) ─────────────────────────────────────────────────
     let (carrier_freq, sample_rate) = {
@@ -254,7 +265,7 @@ pub fn start_tune(
 
     // ── Abort check ───────────────────────────────────────────────────────────
     if state.tx_abort.load(Ordering::SeqCst) {
-        *state.tx_state.lock().unwrap_or_else(|e| e.into_inner()) = TxState::Idle;
+        tx_reset(&state);
         let _ = app.emit(
             "tx-status",
             TxStatusPayload { status: "aborted".into(), progress: 0.0 },
@@ -270,15 +281,7 @@ pub fn start_tune(
     });
 
     // ── Critical section 2: activate ─────────────────────────────────────────
-    {
-        let mut tx = state
-            .tx_state
-            .lock()
-            .map_err(|_| "TX state corrupted".to_string())?;
-        if matches!(*tx, TxState::Starting) {
-            *tx = TxState::Running(handle);
-        }
-    }
+    tx_activate(&state, handle)?;
 
     Ok(())
 }
@@ -582,6 +585,79 @@ mod tests {
         let handle = thread::spawn(|| {});
         let err = validate_tx_state(&TxState::Running(handle)).unwrap_err();
         assert_eq!(err, "Already transmitting");
+    }
+
+    // -----------------------------------------------------------------------
+    // tx_claim / tx_reset / tx_activate
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tx_claim_transitions_idle_to_starting() {
+        let state = AppState::new();
+        tx_claim(&state).unwrap();
+        assert!(matches!(*state.tx_state.lock().unwrap(), TxState::Starting));
+        assert!(!state.tx_abort.load(Ordering::SeqCst), "abort must be cleared");
+    }
+
+    #[test]
+    fn tx_claim_rejects_when_starting() {
+        let state = AppState::new();
+        *state.tx_state.lock().unwrap() = TxState::Starting;
+        assert_eq!(tx_claim(&state).unwrap_err(), "Already transmitting");
+    }
+
+    #[test]
+    fn tx_claim_rejects_when_running() {
+        let state = AppState::new();
+        let handle = thread::spawn(|| {});
+        *state.tx_state.lock().unwrap() = TxState::Running(handle);
+        assert_eq!(tx_claim(&state).unwrap_err(), "Already transmitting");
+        // Clean up the thread stored in Running
+        let prev = std::mem::replace(&mut *state.tx_state.lock().unwrap(), TxState::Idle);
+        if let TxState::Running(h) = prev {
+            h.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn tx_claim_clears_abort_flag() {
+        let state = AppState::new();
+        state.tx_abort.store(true, Ordering::SeqCst);
+        tx_claim(&state).unwrap();
+        assert!(!state.tx_abort.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn tx_reset_returns_state_to_idle() {
+        let state = AppState::new();
+        *state.tx_state.lock().unwrap() = TxState::Starting;
+        tx_reset(&state);
+        assert!(matches!(*state.tx_state.lock().unwrap(), TxState::Idle));
+    }
+
+    #[test]
+    fn tx_activate_transitions_starting_to_running() {
+        let state = AppState::new();
+        *state.tx_state.lock().unwrap() = TxState::Starting;
+        let handle = thread::spawn(|| {});
+        tx_activate(&state, handle).unwrap();
+        let prev = std::mem::replace(&mut *state.tx_state.lock().unwrap(), TxState::Idle);
+        if let TxState::Running(h) = prev {
+            h.join().unwrap();
+        } else {
+            panic!("expected Running");
+        }
+    }
+
+    #[test]
+    fn tx_activate_noop_when_already_idle() {
+        // Simulates the race where stop_tx reset state before activate ran.
+        let state = AppState::new();
+        // state is Idle (not Starting) — activate should be a no-op, not panic
+        let handle = thread::spawn(|| {});
+        tx_activate(&state, handle).unwrap();
+        // State remains Idle (the spawned thread exits on its own via abort flag)
+        assert!(matches!(*state.tx_state.lock().unwrap(), TxState::Idle));
     }
 
     // -----------------------------------------------------------------------
