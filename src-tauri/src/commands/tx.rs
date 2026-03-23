@@ -116,18 +116,20 @@ pub fn start_tx(
     // ── Slow work (lock-free) ─────────────────────────────────────────────────
     // stop_tx can now acquire tx_state immediately and set tx_abort=true.
 
-    let carrier_freq = state.config.lock().unwrap().carrier_freq;
-    let sample_rate = state.config.lock().unwrap().sample_rate;
-    let target_watts = state.config.lock().unwrap().tx_power_watts;
+    // Snapshot all config fields in one lock acquisition so carrier_freq,
+    // sample_rate, and tx_power_watts are from the same consistent config state.
+    let (carrier_freq, sample_rate, target_watts) = {
+        let cfg = state.config.lock().unwrap();
+        (cfg.carrier_freq, cfg.sample_rate, cfg.tx_power_watts)
+    };
 
     let encoder = Psk31Encoder::new(sample_rate, carrier_freq);
     let samples = encoder.encode(&text);
 
     if samples.is_empty() {
-        *state
-            .tx_state
-            .lock()
-            .map_err(|_| "TX state corrupted".to_string())? = TxState::Idle;
+        // Reset state on early exit — use into_inner() on poison so we always
+        // return to Idle even if a previous panic left the mutex poisoned.
+        *state.tx_state.lock().unwrap_or_else(|e| e.into_inner()) = TxState::Idle;
         return Err("Nothing to transmit".into());
     }
 
@@ -142,10 +144,7 @@ pub fn start_tx(
     // ── Abort check ───────────────────────────────────────────────────────────
     // If stop_tx fired during slow work it set tx_abort=true. Cancel cleanly.
     if state.tx_abort.load(Ordering::SeqCst) {
-        *state
-            .tx_state
-            .lock()
-            .map_err(|_| "TX state corrupted".to_string())? = TxState::Idle;
+        *state.tx_state.lock().unwrap_or_else(|e| e.into_inner()) = TxState::Idle;
         let _ = app.emit(
             "tx-status",
             TxStatusPayload { status: "aborted".into(), progress: 0.0 },
@@ -239,8 +238,10 @@ pub fn start_tune(
     }
 
     // ── Slow work (lock-free) ─────────────────────────────────────────────────
-    let carrier_freq = state.config.lock().unwrap().carrier_freq;
-    let sample_rate = state.config.lock().unwrap().sample_rate;
+    let (carrier_freq, sample_rate) = {
+        let cfg = state.config.lock().unwrap();
+        (cfg.carrier_freq, cfg.sample_rate)
+    };
 
     // Tune always uses 10W regardless of the configured TX power setting
     let _ = with_radio(&state, &app, |radio| {
@@ -253,10 +254,7 @@ pub fn start_tune(
 
     // ── Abort check ───────────────────────────────────────────────────────────
     if state.tx_abort.load(Ordering::SeqCst) {
-        *state
-            .tx_state
-            .lock()
-            .map_err(|_| "TX state corrupted".to_string())? = TxState::Idle;
+        *state.tx_state.lock().unwrap_or_else(|e| e.into_inner()) = TxState::Idle;
         let _ = app.emit(
             "tx-status",
             TxStatusPayload { status: "aborted".into(), progress: 0.0 },
@@ -485,6 +483,16 @@ fn run_tx_thread(
                 progress: 0.0,
             },
         );
+        // PTT OFF — don't leave the transmitter keyed on audio device failure.
+        if let Ok(mut guard) = radio_state.radio.lock() {
+            if let Some(radio) = guard.as_mut() {
+                if let Err(e) = radio.ptt_off() {
+                    log::warn!("PTT OFF failed after audio error: {e}");
+                }
+            }
+        }
+        // Reset tx_state so start_tx is usable again after an audio device failure.
+        *radio_state.tx_state.lock().unwrap_or_else(|e| e.into_inner()) = TxState::Idle;
         return;
     }
 
@@ -524,8 +532,9 @@ fn run_tx_thread(
             );
 
             // Self-clear our handle from AppState so start_tx works immediately.
-            // Use try_lock to avoid deadlock if stop_tx holds the lock concurrently.
-            if let Ok(mut tx) = radio_state.tx_state.try_lock() {
+            // A regular lock is safe here: stop_tx releases tx_state BEFORE
+            // joining this thread, so it cannot hold the lock at this point.
+            if let Ok(mut tx) = radio_state.tx_state.lock() {
                 if matches!(*tx, TxState::Running(_)) {
                     *tx = TxState::Idle;
                 }
