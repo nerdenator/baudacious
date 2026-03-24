@@ -88,17 +88,25 @@ pub(crate) fn validate_tx_state(tx: &TxState) -> Result<(), String> {
 
 /// Critical section 1 — atomically claim the TX slot.
 ///
-/// Transitions `Idle → Starting` and resets `tx_abort`, all under the lock so
-/// a concurrent `stop_tx` that sets `tx_abort=true` cannot race with our reset.
-pub(crate) fn tx_claim(state: &AppState) -> Result<(), String> {
+/// Transitions `Idle → Starting`, resets `tx_abort`, and increments the
+/// generation counter — all under the lock so a concurrent `stop_tx` that
+/// sets `tx_abort=true` cannot race with our reset.
+///
+/// Returns the new generation value, which the caller must carry through to
+/// the pre-spawn abort check and `tx_activate`.  If a `stop_tx`+`start_tx`
+/// sequence completes while the caller is doing slow work, the generation will
+/// have changed and the caller can detect the ABA race without relying solely
+/// on the shared `tx_abort` flag.
+pub(crate) fn tx_claim(state: &AppState) -> Result<u64, String> {
     let mut tx = state
         .tx_state
         .lock()
         .map_err(|_| "TX state corrupted".to_string())?;
     validate_tx_state(&tx)?;
     state.tx_abort.store(false, Ordering::SeqCst);
+    let gen = state.tx_generation.fetch_add(1, Ordering::SeqCst) + 1;
     *tx = TxState::Starting;
-    Ok(())
+    Ok(gen)
 }
 
 /// Reset the TX slot to `Idle`.
@@ -112,24 +120,38 @@ pub(crate) fn tx_reset(state: &AppState) {
 
 /// Critical section 2 — activate the TX slot.
 ///
-/// Transitions `Starting → Running(handle)`.  If `stop_tx` already reset the
-/// state to `Idle` while we were doing slow work, the `if` guard is false and
-/// the thread self-exits via the `tx_abort` flag.
-pub(crate) fn tx_activate(state: &AppState, handle: JoinHandle<()>) -> Result<(), String> {
+/// Transitions `Starting → Running(handle)` if and only if the generation
+/// still matches `my_gen`.  Two cancellation scenarios trigger the else path:
+///
+/// 1. `stop_tx` reset state to `Idle` while we were doing slow work.
+/// 2. ABA race: `stop_tx` + a new `start_tx` completed, resetting the
+///    generation so `my_gen` no longer matches the current counter.
+///
+/// In both cases the spawned thread holds `tx_abort=true` (set by `stop_tx`
+/// or the generation check in `start_tx`) and will exit at its early-abort
+/// check.  We release the lock first, then join, then return `Err`.
+pub(crate) fn tx_activate(
+    state: &AppState,
+    handle: JoinHandle<()>,
+    my_gen: u64,
+) -> Result<(), String> {
     let mut tx = state
         .tx_state
         .lock()
         .map_err(|_| "TX state corrupted".to_string())?;
-    if matches!(*tx, TxState::Starting) {
+    if matches!(*tx, TxState::Starting)
+        && state.tx_generation.load(Ordering::SeqCst) == my_gen
+    {
         *tx = TxState::Running(handle);
         return Ok(());
     }
-    // Cancellation path: stop_tx already reset state to Idle while we were
-    // doing slow work. Release the lock before joining so the thread can run
-    // its early-abort check and exit cleanly.
+    // Cancellation path: either stop_tx reset the state or the generation
+    // changed (ABA race).  Release the lock before joining.
     drop(tx);
-    let _ = handle.join();
-    Err("Cancelled before activation".to_string())
+    match handle.join() {
+        Ok(()) => Err("Cancelled before activation".to_string()),
+        Err(_) => Err("TX thread panicked during cancellation".to_string()),
+    }
 }
 
 /// Payload for `tx-status` events sent to the frontend
@@ -147,7 +169,7 @@ pub fn start_tx(
     device_id: String,
 ) -> Result<(), String> {
     // ── Critical section 1: claim + reset abort ───────────────────────────────
-    tx_claim(&state)?;
+    let my_gen = tx_claim(&state)?;
 
     // ── Slow work (lock-free) ─────────────────────────────────────────────────
     // stop_tx can now acquire tx_state immediately and set tx_abort=true.
@@ -176,9 +198,16 @@ pub fn start_tx(
     });
 
     // ── Abort check ───────────────────────────────────────────────────────────
-    // If stop_tx fired during slow work it set tx_abort=true. Cancel cleanly.
-    if state.tx_abort.load(Ordering::SeqCst) {
-        tx_reset(&state);
+    // If stop_tx fired during slow work it set tx_abort=true.  Also check the
+    // generation: if stop_tx + a new start_tx completed while we were encoding
+    // or in CAT I/O, the generation will have advanced (ABA race) and we must
+    // not reset the slot that now belongs to the new start.
+    let aborted = state.tx_abort.load(Ordering::SeqCst)
+        || state.tx_generation.load(Ordering::SeqCst) != my_gen;
+    if aborted {
+        if state.tx_generation.load(Ordering::SeqCst) == my_gen {
+            tx_reset(&state); // still our slot — give it back
+        }
         let _ = app.emit(
             "tx-status",
             TxStatusPayload { status: "aborted".into(), progress: 0.0 },
@@ -201,8 +230,9 @@ pub fn start_tx(
 
     // ── Critical section 2: activate ─────────────────────────────────────────
     // If stop_tx raced between the abort check and spawn, state is already Idle.
-    // tx_activate detects this, joins the (already-aborted) thread, and errors.
-    tx_activate(&state, handle)?;
+    // tx_activate detects this (or an ABA generation mismatch), joins the
+    // (already-aborted) thread, and errors.
+    tx_activate(&state, handle, my_gen)?;
 
     Ok(())
 }
@@ -210,11 +240,13 @@ pub fn start_tx(
 fn stop_tx_inner(state: &AppState) -> Result<(), String> {
     // Lock first, set abort, take handle — all under the same guard so that
     // start_tx (which resets tx_abort=false inside the lock) cannot race with us.
+    // Recover from a poisoned mutex so the abort flag and ptt_off safety call
+    // below are not skipped due to a panic in an unrelated code path.
     let handle = {
         let mut tx = state
             .tx_state
             .lock()
-            .map_err(|_| "TX state corrupted".to_string())?;
+            .unwrap_or_else(|e| e.into_inner());
         state.tx_abort.store(true, Ordering::SeqCst);
         match std::mem::replace(&mut *tx, TxState::Idle) {
             TxState::Running(h) => Some(h),
@@ -252,7 +284,7 @@ pub fn start_tune(
     device_id: String,
 ) -> Result<(), String> {
     // ── Critical section 1: claim + reset abort ───────────────────────────────
-    tx_claim(&state)?;
+    let my_gen = tx_claim(&state)?;
 
     // ── Slow work (lock-free) ─────────────────────────────────────────────────
     let (carrier_freq, sample_rate) = {
@@ -270,8 +302,12 @@ pub fn start_tune(
     });
 
     // ── Abort check ───────────────────────────────────────────────────────────
-    if state.tx_abort.load(Ordering::SeqCst) {
-        tx_reset(&state);
+    let aborted = state.tx_abort.load(Ordering::SeqCst)
+        || state.tx_generation.load(Ordering::SeqCst) != my_gen;
+    if aborted {
+        if state.tx_generation.load(Ordering::SeqCst) == my_gen {
+            tx_reset(&state);
+        }
         let _ = app.emit(
             "tx-status",
             TxStatusPayload { status: "aborted".into(), progress: 0.0 },
@@ -288,18 +324,21 @@ pub fn start_tune(
 
     // ── Critical section 2: activate ─────────────────────────────────────────
     // If stop_tune raced between the abort check and spawn, state is already Idle.
-    // tx_activate detects this, joins the (already-aborted) thread, and errors.
-    tx_activate(&state, handle)?;
+    // tx_activate detects this (or an ABA generation mismatch), joins the
+    // (already-aborted) thread, and errors.
+    tx_activate(&state, handle, my_gen)?;
 
     Ok(())
 }
 
 fn stop_tune_inner(state: &AppState) -> Result<(), String> {
+    // Recover from a poisoned mutex so abort + ptt_off safety actions are not
+    // skipped due to a panic elsewhere.
     let handle = {
         let mut tx = state
             .tx_state
             .lock()
-            .map_err(|_| "TX state corrupted".to_string())?;
+            .unwrap_or_else(|e| e.into_inner());
         state.tx_abort.store(true, Ordering::SeqCst);
         match std::mem::replace(&mut *tx, TxState::Idle) {
             TxState::Running(h) => Some(h),
@@ -632,6 +671,18 @@ mod tests {
     }
 
     #[test]
+    fn tx_claim_returns_generation_and_increments() {
+        let state = AppState::new();
+        let gen1 = tx_claim(&state).unwrap();
+        assert_eq!(gen1, 1, "first claim should return generation 1");
+        // reset to Idle so a second claim is allowed
+        tx_reset(&state);
+        let gen2 = tx_claim(&state).unwrap();
+        assert_eq!(gen2, 2, "second claim should return generation 2");
+        tx_reset(&state);
+    }
+
+    #[test]
     fn tx_claim_rejects_when_starting() {
         let state = AppState::new();
         *state.tx_state.lock().unwrap() = TxState::Starting;
@@ -657,6 +708,7 @@ mod tests {
         state.tx_abort.store(true, Ordering::SeqCst);
         tx_claim(&state).unwrap();
         assert!(!state.tx_abort.load(Ordering::SeqCst));
+        tx_reset(&state);
     }
 
     #[test]
@@ -670,9 +722,9 @@ mod tests {
     #[test]
     fn tx_activate_transitions_starting_to_running() {
         let state = AppState::new();
-        *state.tx_state.lock().unwrap() = TxState::Starting;
+        let gen = tx_claim(&state).unwrap();
         let handle = thread::spawn(|| {});
-        tx_activate(&state, handle).unwrap();
+        tx_activate(&state, handle, gen).unwrap();
         let prev = std::mem::replace(&mut *state.tx_state.lock().unwrap(), TxState::Idle);
         if let TxState::Running(h) = prev {
             h.join().unwrap();
@@ -686,12 +738,51 @@ mod tests {
         // Simulates the race where stop_tx reset state before activate ran.
         // tx_activate must return Err and join the handle (not drop it detached).
         let state = AppState::new();
+        let gen = tx_claim(&state).unwrap();
         state.tx_abort.store(true, Ordering::SeqCst);
-        // state is Idle (not Starting)
+        *state.tx_state.lock().unwrap() = TxState::Idle; // simulate stop_tx
         let handle = thread::spawn(|| {});
-        let result = tx_activate(&state, handle);
+        let result = tx_activate(&state, handle, gen);
         assert!(result.is_err(), "should return Err on cancellation path");
         assert!(matches!(*state.tx_state.lock().unwrap(), TxState::Idle));
+    }
+
+    #[test]
+    fn tx_activate_rejects_wrong_generation() {
+        // Simulates the ABA race: stop_tx + new start_tx completed, advancing
+        // the generation, before the old start_tx reaches tx_activate.
+        let state = AppState::new();
+        let old_gen = tx_claim(&state).unwrap(); // gen = 1, state = Starting
+        // Simulate stop_tx: reset to Idle
+        *state.tx_state.lock().unwrap() = TxState::Idle;
+        // Simulate new start_tx: claim again advances gen to 2
+        let _new_gen = tx_claim(&state).unwrap(); // gen = 2, state = Starting
+        // Old start_tx now tries to activate with stale gen=1
+        state.tx_abort.store(true, Ordering::SeqCst); // tx thread will self-exit
+        let handle = thread::spawn(|| {});
+        let result = tx_activate(&state, handle, old_gen);
+        assert!(result.is_err(), "old generation should be rejected");
+        // State should still be Starting (belonging to the new start)
+        assert!(matches!(*state.tx_state.lock().unwrap(), TxState::Starting));
+        // Clean up: new start's slot
+        tx_reset(&state);
+    }
+
+    #[test]
+    fn tx_activate_returns_err_on_thread_panic() {
+        // Cancellation path: thread panics — error should propagate, not be swallowed.
+        let state = AppState::new();
+        let gen = tx_claim(&state).unwrap();
+        // Reset to Idle so tx_activate takes the cancellation path
+        *state.tx_state.lock().unwrap() = TxState::Idle;
+        let handle = thread::spawn(|| panic!("simulated TX thread panic"));
+        let result = tx_activate(&state, handle, gen);
+        assert!(
+            result
+                .as_ref()
+                .is_err_and(|e| e.contains("panicked")),
+            "expected a panicked error, got: {result:?}"
+        );
     }
 
     // -----------------------------------------------------------------------

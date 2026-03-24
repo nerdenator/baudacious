@@ -1,6 +1,6 @@
 //! Application state
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use crate::domain::{ModemConfig, ModemStatus};
@@ -31,6 +31,11 @@ pub struct AppState {
     pub audio_thread: Mutex<Option<JoinHandle<()>>>,
     /// Shared flag to signal the TX thread to abort
     pub tx_abort: Arc<AtomicBool>,
+    /// Monotonically increasing counter; incremented on every successful tx_claim.
+    /// start_tx / start_tune capture their generation at claim time and compare it
+    /// on abort checks and tx_activate to detect ABA races (stop → new start →
+    /// old start continues).
+    pub tx_generation: Arc<AtomicU64>,
     /// TX pipeline state: Idle / Starting / Running(handle)
     pub tx_state: Mutex<TxState>,
     /// Shared flag to enable/disable the RX decoder in the audio thread
@@ -53,6 +58,7 @@ impl AppState {
             audio_running: Arc::new(AtomicBool::new(false)),
             audio_thread: Mutex::new(None),
             tx_abort: Arc::new(AtomicBool::new(false)),
+            tx_generation: Arc::new(AtomicU64::new(0)),
             tx_state: Mutex::new(TxState::Idle),
             rx_running: Arc::new(AtomicBool::new(false)),
             rx_carrier_freq: Arc::new(Mutex::new(1000.0)),
