@@ -1,10 +1,24 @@
 //! Application state
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use crate::domain::{ModemConfig, ModemStatus};
 use crate::ports::RadioControl;
+
+/// State of the TX pipeline.
+///
+/// Transitions:
+/// - `Idle` → `Starting`: start_tx/start_tune claims the slot (under lock)
+/// - `Starting` → `Running`: thread spawned and handle stored (under lock)
+/// - `Running` → `Idle`: stop_tx/stop_tune takes handle (under lock), then joins
+/// - `Starting` → `Idle`: stop_tx during slow work, or start_tx aborts early
+/// - `Running` → `Idle`: run_tx_thread self-clears on normal completion
+pub enum TxState {
+    Idle,
+    Starting,
+    Running(JoinHandle<()>),
+}
 
 /// Shared application state managed by Tauri
 pub struct AppState {
@@ -17,8 +31,13 @@ pub struct AppState {
     pub audio_thread: Mutex<Option<JoinHandle<()>>>,
     /// Shared flag to signal the TX thread to abort
     pub tx_abort: Arc<AtomicBool>,
-    /// Handle to the TX thread (for clean shutdown)
-    pub tx_thread: Mutex<Option<JoinHandle<()>>>,
+    /// Monotonically increasing counter; incremented on every successful tx_claim.
+    /// start_tx / start_tune capture their generation at claim time and compare it
+    /// on abort checks and tx_activate to detect ABA races (stop → new start →
+    /// old start continues).
+    pub tx_generation: Arc<AtomicU64>,
+    /// TX pipeline state: Idle / Starting / Running(handle)
+    pub tx_state: Mutex<TxState>,
     /// Shared flag to enable/disable the RX decoder in the audio thread
     pub rx_running: Arc<AtomicBool>,
     /// Carrier frequency for RX decoder (updated by click-to-tune)
@@ -39,7 +58,8 @@ impl AppState {
             audio_running: Arc::new(AtomicBool::new(false)),
             audio_thread: Mutex::new(None),
             tx_abort: Arc::new(AtomicBool::new(false)),
-            tx_thread: Mutex::new(None),
+            tx_generation: Arc::new(AtomicU64::new(0)),
+            tx_state: Mutex::new(TxState::Idle),
             rx_running: Arc::new(AtomicBool::new(false)),
             rx_carrier_freq: Arc::new(Mutex::new(1000.0)),
             audio_device_name: Arc::new(Mutex::new(None)),
@@ -74,6 +94,15 @@ mod tests {
         assert!(!state.audio_running.load(Ordering::Relaxed));
         assert!(!state.tx_abort.load(Ordering::Relaxed));
         assert!(!state.rx_running.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn tx_state_starts_idle() {
+        let state = AppState::new();
+        assert!(
+            matches!(*state.tx_state.lock().unwrap(), TxState::Idle),
+            "tx_state must start as Idle"
+        );
     }
 
     #[test]
