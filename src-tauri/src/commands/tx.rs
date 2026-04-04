@@ -439,11 +439,21 @@ fn run_tune_thread(
 
     if let Err(e) = start_result {
         log::error!("Failed to start audio output for tune: {e}");
+        let _ = app.emit(
+            "tx-status",
+            TxStatusPayload {
+                status: format!("error: {e}"),
+                progress: 0.0,
+            },
+        );
+        // PTT OFF — don't leave the transmitter keyed on audio device failure.
         if let Ok(mut guard) = radio_state.radio.lock() {
             if let Some(radio) = guard.as_mut() {
                 let _ = radio.ptt_off();
             }
         }
+        // Reset tx_state so start_tune is usable again after an audio device failure.
+        *radio_state.tx_state.lock().unwrap_or_else(|e| e.into_inner()) = TxState::Idle;
         return;
     }
 
