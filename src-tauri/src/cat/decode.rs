@@ -6,7 +6,7 @@
 
 use crate::domain::{Psk31Error, Psk31Result, RadioStatus};
 
-use super::{CatCommand, CatResponse, MODE_TABLE};
+use super::{CatCommand, CatDialect, CatResponse, MODE_TABLE};
 
 /// Decode a raw response string from the radio into a typed CatResponse.
 ///
@@ -15,6 +15,15 @@ use super::{CatCommand, CatResponse, MODE_TABLE};
 ///
 /// Returns `Err` if the response is `"?"` (radio NAK) or cannot be parsed.
 pub fn decode(response: &str, cmd: &CatCommand) -> Psk31Result<CatResponse> {
+    decode_for(CatDialect::Ft991a, response, cmd)
+}
+
+/// Like [`decode`], but selects the reply format for a specific radio.
+pub fn decode_for(
+    dialect: CatDialect,
+    response: &str,
+    cmd: &CatCommand,
+) -> Psk31Result<CatResponse> {
     use CatCommand::*;
 
     // The radio returns "?" when it doesn't understand or rejects a command.
@@ -32,8 +41,15 @@ pub fn decode(response: &str, cmd: &CatCommand) -> Psk31Result<CatResponse> {
         PttOn | PttOff => expect_ack(response, cmd),
         GetTxPower => parse_tx_power(response),
         SetTxPower(_) => expect_ack(response, cmd),
-        GetSignalStrength => parse_signal_strength(response),
-        GetStatus => parse_status(response),
+        GetSignalStrength => match dialect {
+            CatDialect::Ft991a => parse_signal_strength(response),
+            CatDialect::Ft891 => parse_signal_strength_ft891(response),
+        },
+        GetStatus => match dialect {
+            CatDialect::Ft991a => parse_status(response),
+            CatDialect::Ft891 => parse_status_ft891(response),
+        },
+        GetTxState => parse_tx_state(response),
         // BandSelect is write-only — never decoded, but must be covered for exhaustiveness.
         BandSelect(_) => expect_ack(response, cmd),
     }
@@ -104,6 +120,75 @@ fn parse_signal_strength(response: &str) -> Psk31Result<CatResponse> {
         Psk31Error::Cat(format!("Failed to parse S-meter value '{digits}': {e}"))
     })?;
     Ok(CatResponse::SignalStrength(raw.min(30) as f32 / 30.0))
+}
+
+/// Parse FT-891 `"SM0128;"` → `SignalStrength(128 / 255)`
+///
+/// Format: `"SM0"` + 3-digit value (000–255) + `";"`
+fn parse_signal_strength_ft891(response: &str) -> Psk31Result<CatResponse> {
+    let trimmed = response.trim().trim_end_matches(';');
+    if !trimmed.starts_with("SM0") || trimmed.len() != 6 {
+        return Err(Psk31Error::Cat(format!(
+            "Invalid FT-891 S-meter response: '{response}'"
+        )));
+    }
+    let digits = &trimmed[3..6];
+    let raw: u32 = digits.parse().map_err(|e| {
+        Psk31Error::Cat(format!("Failed to parse S-meter value '{digits}': {e}"))
+    })?;
+    Ok(CatResponse::SignalStrength(raw.min(255) as f32 / 255.0))
+}
+
+/// Parse `"TX0;"` / `"TX1;"` / `"TX2;"` → `TxState(bool)`
+///
+/// 0 = receiving, 1 = CAT TX on, 2 = radio (front-panel/mic) TX on.
+fn parse_tx_state(response: &str) -> Psk31Result<CatResponse> {
+    let trimmed = response.trim().trim_end_matches(';');
+    match trimmed {
+        "TX0" => Ok(CatResponse::TxState(false)),
+        "TX1" | "TX2" => Ok(CatResponse::TxState(true)),
+        _ => Err(Psk31Error::Cat(format!(
+            "Invalid TX state response: '{response}'"
+        ))),
+    }
+}
+
+/// Parse the FT-891 `"IF{body};"` reply (25-char body).
+///
+/// ```text
+/// [0..3]   memory channel     [17]    clarifier on
+/// [3..12]  VFO-A freq (Hz)    [18]    fixed
+/// [12..17] clarifier ±dddd    [19]    mode
+/// [20]     VFO/memory   [21] CTCSS   [22..24] fixed   [24] repeater shift
+/// ```
+///
+/// The reply carries no TX state and no split flag (bytes 21 and 24 are CTCSS
+/// and repeater shift), so both are reported false — use `TX;` for PTT state.
+fn parse_status_ft891(response: &str) -> Psk31Result<CatResponse> {
+    let trimmed = response.trim().trim_end_matches(';');
+    let body = trimmed.strip_prefix("IF").ok_or_else(|| {
+        Psk31Error::Cat(format!("Invalid IF response (missing 'IF' prefix): '{response}'"))
+    })?;
+    if body.len() != 25 || !body.is_ascii() {
+        return Err(Psk31Error::Cat(format!(
+            "FT-891 IF response body must be 25 ASCII chars, got {}: '{response}'",
+            body.len()
+        )));
+    }
+    let freq_str = &body[3..12];
+    let frequency_hz: u64 = freq_str.parse().map_err(|e| {
+        Psk31Error::Cat(format!("IF: failed to parse frequency '{freq_str}': {e}"))
+    })?;
+    let mode_code = &body[19..20];
+
+    Ok(CatResponse::Status(RadioStatus {
+        frequency_hz,
+        mode: lookup_mode(mode_code, mode_code),
+        is_transmitting: false,
+        rit_offset_hz: parse_rit_offset(&body[12..17]),
+        rit_enabled: body.as_bytes()[17] == b'1',
+        split: false,
+    }))
 }
 
 /// Parse `"IF{body};"` → `Status(RadioStatus)`
@@ -744,5 +829,109 @@ mod tests {
                 "Roundtrip failed for mode code '{code}'"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod ft891_tests {
+    use super::*;
+    use CatCommand::*;
+
+    /// Build a 25-char FT-891 IF body. `ctcss` is byte 21, `shift` is byte 24.
+    fn if_891(freq: u64, clar: &str, clar_on: char, mode: char, ctcss: char, shift: char) -> String {
+        format!("IF001{freq:09}{clar}{clar_on}0{mode}0{ctcss}00{shift};")
+    }
+
+    fn status(r: CatResponse) -> RadioStatus {
+        match r {
+            CatResponse::Status(s) => s,
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tx_state_values() {
+        assert_eq!(decode("TX0;", &GetTxState).unwrap(), CatResponse::TxState(false));
+        assert_eq!(decode("TX1;", &GetTxState).unwrap(), CatResponse::TxState(true));
+        assert_eq!(decode("TX2;", &GetTxState).unwrap(), CatResponse::TxState(true));
+    }
+
+    #[test]
+    fn tx_state_invalid() {
+        assert!(decode("TX3;", &GetTxState).is_err());
+        assert!(decode("TX;", &GetTxState).is_err());
+        assert!(decode("FA0;", &GetTxState).is_err());
+        assert!(decode("?;", &GetTxState).is_err());
+    }
+
+    #[test]
+    fn ft891_status_basic() {
+        let r = decode_for(CatDialect::Ft891, &if_891(14_070_000, "+0000", '0', 'C', '0', '0'), &GetStatus).unwrap();
+        let s = status(r);
+        assert_eq!(s.frequency_hz, 14_070_000);
+        assert_eq!(s.mode, "DATA-USB");
+        assert!(!s.is_transmitting);
+        assert!(!s.split);
+        assert!(!s.rit_enabled);
+        assert_eq!(s.rit_offset_hz, 0);
+    }
+
+    #[test]
+    fn ft891_status_ctcss_is_not_transmitting() {
+        for ctcss in ['1', '2'] {
+            let s = status(decode_for(CatDialect::Ft891, &if_891(7_035_000, "+0000", '0', '8', ctcss, '0'), &GetStatus).unwrap());
+            assert!(!s.is_transmitting, "CTCSS={ctcss} must not read as TX");
+            assert_eq!(s.mode, "DATA-LSB");
+        }
+    }
+
+    #[test]
+    fn ft891_status_repeater_shift_is_not_split() {
+        for shift in ['1', '2'] {
+            let s = status(decode_for(CatDialect::Ft891, &if_891(50_313_000, "+0000", '0', 'C', '0', shift), &GetStatus).unwrap());
+            assert!(!s.split, "shift={shift} must not read as split");
+        }
+    }
+
+    #[test]
+    fn ft891_status_clarifier() {
+        let s = status(decode_for(CatDialect::Ft891, &if_891(14_070_000, "-0500", '1', 'C', '0', '0'), &GetStatus).unwrap());
+        assert!(s.rit_enabled);
+        assert_eq!(s.rit_offset_hz, -500);
+    }
+
+    #[test]
+    fn ft891_status_errors() {
+        let d = CatDialect::Ft891;
+        assert!(decode_for(d, "IF001014070000+00000C0000;", &GetStatus).is_err(), "26-char body");
+        assert!(decode_for(d, "IF00101407000+0000", &GetStatus).is_err(), "short body");
+        assert!(decode_for(d, "XX001014070000+000000C0000000;", &GetStatus).is_err(), "no IF prefix");
+        assert!(decode_for(d, &if_891(0, "+0000", '0', 'C', '0', '0').replace("000000000", "ABCDEFGHI"), &GetStatus).is_err(), "non-numeric freq");
+        assert!(decode_for(d, "?;", &GetStatus).is_err(), "NAK");
+    }
+
+    #[test]
+    fn ft891_signal_strength_scale() {
+        let d = CatDialect::Ft891;
+        assert_eq!(decode_for(d, "SM0000;", &GetSignalStrength).unwrap(), CatResponse::SignalStrength(0.0));
+        assert_eq!(decode_for(d, "SM0255;", &GetSignalStrength).unwrap(), CatResponse::SignalStrength(1.0));
+        match decode_for(d, "SM0128;", &GetSignalStrength).unwrap() {
+            CatResponse::SignalStrength(v) => assert!((v - 0.502).abs() < 0.01),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn ft891_signal_strength_rejects_991a_format_and_garbage() {
+        let d = CatDialect::Ft891;
+        assert!(decode_for(d, "SM00015;", &GetSignalStrength).is_err(), "4-digit form");
+        assert!(decode_for(d, "SM0ABC;", &GetSignalStrength).is_err());
+        assert!(decode_for(d, "SM0;", &GetSignalStrength).is_err());
+    }
+
+    #[test]
+    fn default_dialect_decodes_as_991a() {
+        // 4-digit S-meter still valid through the plain decode() path
+        assert_eq!(decode("SM00015;", &GetSignalStrength).unwrap(), CatResponse::SignalStrength(0.5));
     }
 }

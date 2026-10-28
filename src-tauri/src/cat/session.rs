@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 use crate::domain::{Psk31Error, Psk31Result};
 use crate::ports::SerialConnection;
 
-use super::{decode, encode, CatCommand, CatResponse};
+use super::decode::decode_for;
+use super::{encode, CatCommand, CatDialect, CatResponse};
 
 /// Minimum delay between CAT commands (FT-991A firmware requirement)
 const COMMAND_DELAY_MS: u64 = 50;
@@ -30,15 +31,22 @@ const RESPONSE_TIMEOUT_READS: usize = 10;
 pub struct CatSession {
     serial: Box<dyn SerialConnection>,
     last_command_time: Option<Instant>,
+    dialect: CatDialect,
 }
 
 impl CatSession {
     pub fn new(serial: Box<dyn SerialConnection>) -> Self {
+        Self::with_dialect(serial, CatDialect::default())
+    }
+
+    /// Open a session that decodes replies in the given radio's format.
+    pub fn with_dialect(serial: Box<dyn SerialConnection>, dialect: CatDialect) -> Self {
         // Give the USB-serial adapter time to settle before the first command.
         std::thread::sleep(Duration::from_millis(PORT_SETTLE_MS));
         Self {
             serial,
             last_command_time: None,
+            dialect,
         }
     }
 
@@ -57,7 +65,7 @@ impl CatSession {
             .write(wire.as_bytes())
             .map_err(|e| Psk31Error::Cat(format!("Command '{wire}' write failed: {e}")))?;
 
-        let raw = self.read_until_semicolon(&wire);
+        let raw = self.read_until_semicolon(&wire, self.reply_prefix(cmd));
         // Update timestamp even on error so the next command still respects the delay
         self.last_command_time = Some(Instant::now());
         let raw = raw?;
@@ -68,7 +76,7 @@ impl CatSession {
         // e.g. "FA;FA00014070000;" → "FA00014070000;"
         let raw = raw.strip_prefix(&wire).unwrap_or(&raw);
 
-        decode(raw, cmd)
+        decode_for(self.dialect, raw, cmd)
     }
 
     /// Write a command and do NOT wait for a response.
@@ -97,7 +105,17 @@ impl CatSession {
     /// Each serial.read() has a 100ms hardware timeout. We retry up to
     /// RESPONSE_TIMEOUT_READS times to handle slow USB-serial adapters
     /// that may return partial responses.
-    fn read_until_semicolon(&mut self, cmd_wire: &str) -> Psk31Result<String> {
+    ///
+    /// With `reply_prefix` set, keeps reading until a complete frame starting with
+    /// that prefix (or a `?;` NAK) has arrived, and returns just that frame. This
+    /// skips stray frames left by earlier write-only commands whose replies (if
+    /// the radio sends any) arrive late. On timeout the raw buffer is returned so
+    /// the decoder reports what actually came back.
+    fn read_until_semicolon(
+        &mut self,
+        cmd_wire: &str,
+        reply_prefix: Option<&str>,
+    ) -> Psk31Result<String> {
         let mut buf: Vec<u8> = Vec::with_capacity(READ_CHUNK_SIZE);
         let mut chunk = [0u8; READ_CHUNK_SIZE];
 
@@ -105,8 +123,14 @@ impl CatSession {
             match self.serial.read(&mut chunk) {
                 Ok(n) if n > 0 => {
                     buf.extend_from_slice(&chunk[..n]);
-                    if buf.contains(&b';') {
-                        break;
+                    match reply_prefix {
+                        None if buf.contains(&b';') => break,
+                        Some(prefix) => {
+                            if let Some(frame) = find_reply_frame(&buf, prefix, cmd_wire) {
+                                return Ok(frame);
+                            }
+                        }
+                        None => {}
                     }
                 }
                 Ok(_) => {} // Zero bytes: read timed out, try again
@@ -129,6 +153,25 @@ impl CatSession {
             .map_err(|e| Psk31Error::Cat(format!("Invalid UTF-8 response: {e}")))
     }
 
+    /// Reply prefix to wait for on query commands, FT-891 dialect only.
+    ///
+    /// The FT-991A path keeps its original "first `;` wins" read, which is
+    /// verified on hardware.
+    fn reply_prefix(&self, cmd: &CatCommand) -> Option<&'static str> {
+        if self.dialect != CatDialect::Ft891 {
+            return None;
+        }
+        match cmd {
+            CatCommand::GetFrequencyA => Some("FA"),
+            CatCommand::GetMode => Some("MD"),
+            CatCommand::GetTxPower => Some("PC"),
+            CatCommand::GetSignalStrength => Some("SM"),
+            CatCommand::GetStatus => Some("IF"),
+            CatCommand::GetTxState => Some("TX"),
+            _ => None,
+        }
+    }
+
     /// Sleep if needed to maintain the minimum inter-command delay.
     fn ensure_command_delay(&self) {
         if let Some(last) = self.last_command_time {
@@ -139,6 +182,22 @@ impl CatSession {
             }
         }
     }
+}
+
+/// Find the first complete `;`-terminated frame in `buf` that starts with `prefix`
+/// or is a `?` NAK; returns it including the terminator. A frame identical to the
+/// command we sent (`echo`) is skipped — it shares the prefix but isn't the reply.
+fn find_reply_frame(buf: &[u8], prefix: &str, echo: &str) -> Option<String> {
+    let text = std::str::from_utf8(buf).ok()?;
+    let mut rest = text;
+    while let Some(end) = rest.find(';') {
+        let frame = &rest[..=end];
+        if frame != echo && (frame.starts_with(prefix) || frame == "?;") {
+            return Some(frame.to_string());
+        }
+        rest = &rest[end + 1..];
+    }
+    None
 }
 
 #[cfg(test)]
@@ -185,6 +244,101 @@ mod tests {
             response: response.to_string(),
         };
         (CatSession::new(Box::new(mock)), log)
+    }
+
+    /// Serial stub that hands back one scripted chunk per read, then nothing.
+    struct ChunkedSerial(Vec<Vec<u8>>);
+
+    impl SerialConnection for ChunkedSerial {
+        fn write(&mut self, data: &[u8]) -> Psk31Result<usize> { Ok(data.len()) }
+        fn read(&mut self, buf: &mut [u8]) -> Psk31Result<usize> {
+            if self.0.is_empty() { return Ok(0); }
+            let chunk = self.0.remove(0);
+            buf[..chunk.len()].copy_from_slice(&chunk);
+            Ok(chunk.len())
+        }
+        fn close(&mut self) -> Psk31Result<()> { Ok(()) }
+        fn is_connected(&self) -> bool { true }
+    }
+
+    fn ft891_session(chunks: &[&str]) -> CatSession {
+        let serial = ChunkedSerial(chunks.iter().map(|c| c.as_bytes().to_vec()).collect());
+        CatSession::with_dialect(Box::new(serial), CatDialect::Ft891)
+    }
+
+    #[test]
+    fn ft891_skips_stray_frame_in_same_chunk() {
+        // A late reply to an earlier write-only command arrives glued to the real reply
+        let mut s = ft891_session(&["TX1;FA014070000;"]);
+        assert_eq!(s.execute(&CatCommand::GetFrequencyA).unwrap(), CatResponse::FrequencyHz(14_070_000));
+    }
+
+    #[test]
+    fn ft891_keeps_reading_past_stray_frame_in_earlier_chunk() {
+        let mut s = ft891_session(&["MD0C;", "FA014070000;"]);
+        assert_eq!(s.execute(&CatCommand::GetFrequencyA).unwrap(), CatResponse::FrequencyHz(14_070_000));
+    }
+
+    #[test]
+    fn ft891_reply_split_across_chunks() {
+        let mut s = ft891_session(&["TX1;FA0140", "70000;"]);
+        assert_eq!(s.execute(&CatCommand::GetFrequencyA).unwrap(), CatResponse::FrequencyHz(14_070_000));
+    }
+
+    #[test]
+    fn ft891_echo_of_query_is_not_mistaken_for_reply() {
+        let mut s = ft891_session(&["FA;FA014070000;"]);
+        assert_eq!(s.execute(&CatCommand::GetFrequencyA).unwrap(), CatResponse::FrequencyHz(14_070_000));
+    }
+
+    #[test]
+    fn ft891_nak_is_returned_as_error() {
+        let mut s = ft891_session(&["?;"]);
+        assert!(s.execute(&CatCommand::GetFrequencyA).is_err());
+    }
+
+    #[test]
+    fn ft891_only_stray_frames_is_error_not_misparse() {
+        let mut s = ft891_session(&["TX1;"]);
+        assert!(s.execute(&CatCommand::GetFrequencyA).is_err());
+    }
+
+    #[test]
+    fn default_dialect_still_takes_first_frame() {
+        // FT-991A behaviour is unchanged: first ';' wins (so the stray frame is decoded)
+        let serial = ChunkedSerial(vec![b"TX1;FA014070000;".to_vec()]);
+        let mut s = CatSession::new(Box::new(serial));
+        assert!(s.execute(&CatCommand::GetFrequencyA).is_err());
+    }
+
+    #[test]
+    fn find_reply_frame_cases() {
+        assert_eq!(find_reply_frame(b"FA014070000;", "FA", "FA;"), Some("FA014070000;".into()));
+        assert_eq!(find_reply_frame(b"FA;", "FA", "FA;"), None, "echo only");
+        assert_eq!(find_reply_frame(b"TX0;?;", "FA", "FA;"), Some("?;".into()));
+        assert_eq!(find_reply_frame(b"FA0140", "FA", "FA;"), None, "incomplete frame");
+        assert_eq!(find_reply_frame(&[0xff, 0xfe, b';'], "FA", "FA;"), None, "invalid utf-8");
+    }
+
+    #[test]
+    fn dialect_selects_signal_strength_format() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mock = MockSerial { log, response: "SM0255;".to_string() };
+        let mut s = CatSession::with_dialect(Box::new(mock), CatDialect::Ft891);
+        assert_eq!(
+            s.execute(&CatCommand::GetSignalStrength).unwrap(),
+            CatResponse::SignalStrength(1.0)
+        );
+        // Same reply through the default (FT-991A) dialect is rejected
+        let (mut d, _) = make_session("SM0255;");
+        assert!(d.execute(&CatCommand::GetSignalStrength).is_err());
+    }
+
+    #[test]
+    fn execute_get_tx_state_sends_tx_query() {
+        let (mut s, log) = make_session("TX1;");
+        assert_eq!(s.execute(&CatCommand::GetTxState).unwrap(), CatResponse::TxState(true));
+        assert_eq!(log.lock().unwrap()[0], "TX;");
     }
 
     // --- Basic I/O ---

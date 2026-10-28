@@ -7,7 +7,7 @@ Cross-platform desktop application for PSK-31 ham radio keyboard-to-keyboard com
 - **Framework**: Tauri 2.x (Rust backend + web frontend)
 - **Frontend**: Vanilla TypeScript + Vite
 - **Backend**: Rust with hexagonal architecture
-- **Target Radio**: Yaesu FT-991A (USB audio + CAT serial)
+- **Target Radios**: Yaesu FT-991A, FT-891 (USB audio + CAT serial)
 
 ## Architecture
 
@@ -19,7 +19,7 @@ src-tauri/src/
 ├── ports/       # Trait definitions (AudioInput, AudioOutput, SerialConnection, RadioControl)
 ├── dsp/         # Signal processing - pure functions (FFT, NCO, filters, Costas loop)
 ├── modem/       # PSK-31 protocol (varicode, encoder, decoder)
-├── adapters/    # Implementations (cpal audio, serialport, FT-991A CAT)
+├── adapters/    # Implementations (cpal audio, serialport, FT-991A + FT-891 CAT)
 ├── commands/    # Tauri command handlers
 └── state.rs     # AppState with Arc<Mutex<>>
 ```
@@ -28,9 +28,11 @@ src-tauri/src/
 
 - `PLAN.md` — Full implementation plan with 6 phases
 - `PLAN_MENU.md` — Native menu bar implementation plan
+- `PLAN_FT891.md` — FT-891 support plan (supersedes the FT-891 section of `PLAN_RADIO_SUPPORT.md`)
 - `src-tauri/src/lib.rs` — Tauri app builder, command registration
 - `src-tauri/src/menu.rs` — Native menu bar setup and event handling
 - `src-tauri/src/domain/config.rs` — Configuration profile types
+- `src-tauri/src/domain/radio_type.rs` — `RadioType` + per-radio band table (BS codes, supported bands)
 - `src-tauri/src/modem/varicode.rs` — PSK-31 Varicode tables (complete)
 - `src-tauri/src/dsp/fft.rs` — FFT processor with tests
 - `src-tauri/src/dsp/nco.rs` — Numerically controlled oscillator with tests

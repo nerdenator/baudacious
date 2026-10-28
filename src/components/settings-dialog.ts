@@ -11,6 +11,15 @@ import { connectFromConfig } from './serial-panel';
 import { hideStartupRecoveryDialog } from './startup-dialog';
 import type { Configuration, AudioDeviceInfo } from '../types';
 
+/** Supported radio models and their usual CAT baud rate (mirrors domain/radio_type.rs). */
+const RADIO_DEFAULT_BAUD: Record<string, number> = {
+  'FT-991A': 38400,
+  'FT-891': 9600,
+};
+
+/** Radios whose CAT baud rate is set in the radio's own menu and must be matched here. */
+const RADIO_BAUD_IS_MENU_SETTING = new Set(['FT-891']);
+
 export interface SettingsDialogDeps {
   getCurrentConfig: () => Configuration | null;
   onSave: (config: Configuration) => Promise<void>;
@@ -121,16 +130,34 @@ export function setupSettingsDialog(deps: SettingsDialogDeps): void {
   radioPanel.appendChild(testRow);
 
   const radioTypeSelect = select('device-select');
-  for (const rt of ['FT-991A']) {
+  for (const rt of Object.keys(RADIO_DEFAULT_BAUD)) {
     radioTypeSelect.appendChild(option(rt, rt));
   }
   radioPanel.appendChild(deviceGroup('Radio Type', radioTypeSelect));
 
   const baudSelect = select('device-select');
-  for (const baud of [9600, 19200, 38400, 57600, 115200]) {
+  for (const baud of [4800, 9600, 19200, 38400, 57600, 115200]) {
     baudSelect.appendChild(option(String(baud), String(baud)));
   }
-  radioPanel.appendChild(deviceGroup('Baud Rate', baudSelect));
+  const baudGroup = deviceGroup('Baud Rate', baudSelect);
+  const baudHint = el('div', 'settings-hint');
+  baudHint.id = 'baud-rate-hint';
+  baudHint.textContent = "Must match the radio's menu 05-06 CAT RATE (4800 / 9600 / 19200 / 38400).";
+  baudGroup.appendChild(baudHint);
+  radioPanel.appendChild(baudGroup);
+
+  // The FT-891's CAT rate is a radio menu setting, so show a reminder for it.
+  function updateBaudHint(): void {
+    baudHint.hidden = !RADIO_BAUD_IS_MENU_SETTING.has(radioTypeSelect.value);
+  }
+  updateBaudHint();
+
+  // Picking a different radio suggests its usual CAT baud rate; the user can still change it.
+  radioTypeSelect.addEventListener('change', () => {
+    const suggested = RADIO_DEFAULT_BAUD[radioTypeSelect.value];
+    if (suggested) baudSelect.value = String(suggested);
+    updateBaudHint();
+  });
   panelArea.appendChild(radioPanel);
 
   // ── Port refresh ──────────────────────────────────────────────────────────
@@ -159,7 +186,7 @@ export function setupSettingsDialog(deps: SettingsDialogDeps): void {
     testStatus.textContent = 'Connecting\u2026';
     testStatus.className = 'settings-test-status';
     try {
-      await connectFromConfig(port, baud);
+      await connectFromConfig(port, baud, radioTypeSelect.value);
       testStatus.textContent = 'Connected \u2713';
       testStatus.className = 'settings-test-status success';
     } catch (err) {
@@ -235,6 +262,7 @@ export function setupSettingsDialog(deps: SettingsDialogDeps): void {
     audioOutputSelect.value = config.audio_output ?? '';
     portSelect.value = config.serial_port ?? '';
     radioTypeSelect.value = config.radio_type;
+    updateBaudHint();
     baudSelect.value = String(config.baud_rate);
     deleteBtn.disabled = config.name === 'Default';
   }

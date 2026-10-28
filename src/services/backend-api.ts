@@ -51,8 +51,8 @@ export async function listSerialPorts(): Promise<SerialPortInfo[]> {
   return invoke('list_serial_ports');
 }
 
-export async function connectSerial(port: string, baudRate: number): Promise<RadioInfo> {
-  return invoke('connect_serial', { port, baudRate });
+export async function connectSerial(port: string, baudRate: number, radioType: string): Promise<RadioInfo> {
+  return invoke('connect_serial', { port, baudRate, radioType });
 }
 
 export async function disconnectSerial(): Promise<void> {

@@ -1523,6 +1523,14 @@ html, body {
   color: var(--text-dim);
 }
 
+.settings-hint {
+  font-size: 10px;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+.settings-hint[hidden] { display: none; }
+
 .settings-test-status.success { color: #22c55e; }
 .settings-test-status.error   { color: #ef4444; }
 

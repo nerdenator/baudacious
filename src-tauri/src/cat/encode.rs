@@ -31,6 +31,7 @@ pub fn encode(cmd: &CatCommand) -> String {
         SetTxPower(w) => format!("PC{w:03};"),
         GetSignalStrength => "SM0;".into(),
         GetStatus => "IF;".into(),
+        GetTxState => "TX;".into(),
         BandSelect(code) => format!("BS{code:02};"),
     }
 }
@@ -39,6 +40,11 @@ pub fn encode(cmd: &CatCommand) -> String {
 mod tests {
     use super::*;
     use CatCommand::*;
+
+    #[test]
+    fn encode_get_tx_state() {
+        assert_eq!(encode(&GetTxState), "TX;");
+    }
 
     #[test]
     fn encode_get_frequency_a() {

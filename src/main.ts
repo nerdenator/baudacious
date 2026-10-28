@@ -130,7 +130,7 @@ window.addEventListener('DOMContentLoaded', () => {
       await applyAudioInputDevice(config.audio_input);
       if (config.serial_port) {
         try {
-          await connectFromConfig(config.serial_port, config.baud_rate ?? 38400);
+          await connectFromConfig(config.serial_port, config.baud_rate ?? 38400, config.radio_type ?? 'FT-991A');
           showToast('Settings saved', 'info');
         } catch (err) {
           showToast(`Settings saved — radio connect failed: ${err}`, 'error');
@@ -160,12 +160,13 @@ window.addEventListener('DOMContentLoaded', () => {
       // Auto-connect using saved serial port
       const savedPort = config.serial_port;
       const savedBaud = config.baud_rate ?? 38400;
+      const savedRadio = config.radio_type ?? 'FT-991A';
 
       function showRecovery(err: string): void {
         showStartupRecoveryDialog(config.name ?? 'Default', err, {
           onRetry: () => {
             if (!savedPort) { showRecovery('No serial port configured'); return; }
-            connectFromConfig(savedPort, savedBaud)
+            connectFromConfig(savedPort, savedBaud, savedRadio)
               .then(() => hideStartupRecoveryDialog())
               .catch((e) => showRecovery(String(e)));
           },
@@ -189,10 +190,10 @@ window.addEventListener('DOMContentLoaded', () => {
                   frequencyHz: radioStatus.frequencyHz,
                   mode: radioStatus.mode,
                   connected: true,
-                });
+                }, savedRadio);
               });
             }
-            return connectFromConfig(savedPort, savedBaud);
+            return connectFromConfig(savedPort, savedBaud, savedRadio);
           })
           .catch((err) => {
             showRecovery(String(err));

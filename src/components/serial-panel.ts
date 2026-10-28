@@ -4,7 +4,7 @@
 
 import { connectSerial, disconnectSerial, setFrequency, setMode, getRadioState } from '../services/backend-api';
 import { setSerialState } from '../services/app-state';
-import { syncTxPowerFromRadio } from './tx-power-panel';
+import { syncTxPowerFromRadio, setTxPowerMin } from './tx-power-panel';
 import type { RadioInfo } from '../types';
 
 type BandEntry = {
@@ -12,21 +12,29 @@ type BandEntry = {
   readonly minHz: number;
   readonly maxHz: number;
   readonly psk31Hz: number;
+  /** Radio models that can tune this band (mirrors domain/radio_type.rs). */
+  readonly radios: readonly string[];
 };
 
+/** Lowest TX power (W) each radio accepts (mirrors RadioType::tx_power_range in Rust). */
+const MIN_TX_POWER_W: Record<string, number> = { 'FT-991A': 0, 'FT-891': 5 };
+
+const ALL_RADIOS = ['FT-991A', 'FT-891'] as const;
+const VHF_UHF_RADIOS = ['FT-991A'] as const;
+
 const BAND_PLAN: readonly BandEntry[] = [
-  { name: '160m', minHz: 1_800_000,   maxHz: 2_000_000,   psk31Hz: 1_838_000   },
-  { name: '80m',  minHz: 3_500_000,   maxHz: 4_000_000,   psk31Hz: 3_580_000   },
-  { name: '40m',  minHz: 7_000_000,   maxHz: 7_300_000,   psk31Hz: 7_035_000   },
-  { name: '30m',  minHz: 10_100_000,  maxHz: 10_150_000,  psk31Hz: 10_142_000  },
-  { name: '20m',  minHz: 14_000_000,  maxHz: 14_350_000,  psk31Hz: 14_070_000  },
-  { name: '17m',  minHz: 18_068_000,  maxHz: 18_168_000,  psk31Hz: 18_100_000  },
-  { name: '15m',  minHz: 21_000_000,  maxHz: 21_450_000,  psk31Hz: 21_080_000  },
-  { name: '12m',  minHz: 24_890_000,  maxHz: 24_990_000,  psk31Hz: 24_920_000  },
-  { name: '10m',  minHz: 28_000_000,  maxHz: 29_700_000,  psk31Hz: 28_120_000  },
-  { name: '6m',   minHz: 50_000_000,  maxHz: 54_000_000,  psk31Hz: 50_290_000  },
-  { name: '2m',   minHz: 144_000_000, maxHz: 148_000_000, psk31Hz: 144_144_000 },
-  { name: '70cm', minHz: 420_000_000, maxHz: 450_000_000, psk31Hz: 432_100_000 },
+  { name: '160m', minHz: 1_800_000,   maxHz: 2_000_000,   psk31Hz: 1_838_000, radios: ALL_RADIOS },
+  { name: '80m',  minHz: 3_500_000,   maxHz: 4_000_000,   psk31Hz: 3_580_000, radios: ALL_RADIOS },
+  { name: '40m',  minHz: 7_000_000,   maxHz: 7_300_000,   psk31Hz: 7_035_000, radios: ALL_RADIOS },
+  { name: '30m',  minHz: 10_100_000,  maxHz: 10_150_000,  psk31Hz: 10_142_000, radios: ALL_RADIOS },
+  { name: '20m',  minHz: 14_000_000,  maxHz: 14_350_000,  psk31Hz: 14_070_000, radios: ALL_RADIOS },
+  { name: '17m',  minHz: 18_068_000,  maxHz: 18_168_000,  psk31Hz: 18_100_000, radios: ALL_RADIOS },
+  { name: '15m',  minHz: 21_000_000,  maxHz: 21_450_000,  psk31Hz: 21_080_000, radios: ALL_RADIOS },
+  { name: '12m',  minHz: 24_890_000,  maxHz: 24_990_000,  psk31Hz: 24_920_000, radios: ALL_RADIOS },
+  { name: '10m',  minHz: 28_000_000,  maxHz: 29_700_000,  psk31Hz: 28_120_000, radios: ALL_RADIOS },
+  { name: '6m',   minHz: 50_000_000,  maxHz: 54_000_000,  psk31Hz: 50_290_000, radios: ALL_RADIOS },
+  { name: '2m',   minHz: 144_000_000, maxHz: 148_000_000, psk31Hz: 144_144_000, radios: VHF_UHF_RADIOS },
+  { name: '70cm', minHz: 420_000_000, maxHz: 450_000_000, psk31Hz: 432_100_000, radios: VHF_UHF_RADIOS },
 ];
 
 /** Return the correct DATA mode for a frequency.
@@ -37,8 +45,25 @@ function dataModeForHz(hz: number): string {
   return hz < 10_000_000 ? 'DATA-LSB' : 'DATA-USB';
 }
 
+/** Bands the given radio model can tune. Unknown models get the full plan. */
+function bandsFor(radioType: string): readonly BandEntry[] {
+  const known = ALL_RADIOS.some(r => r === radioType);
+  return known ? BAND_PLAN.filter(b => b.radios.includes(radioType)) : BAND_PLAN;
+}
+
 function detectBand(hz: number): BandEntry | null {
-  return BAND_PLAN.find(b => hz >= b.minHz && hz <= b.maxHz) ?? null;
+  return bandsFor(_radioType).find(b => hz >= b.minHz && hz <= b.maxHz) ?? null;
+}
+
+/** Rebuild the band dropdown for the given radio model. */
+function populateBandSelect(bandSelect: HTMLSelectElement, radioType: string): void {
+  while (bandSelect.options.length > 0) bandSelect.remove(0);
+  for (const band of bandsFor(radioType)) {
+    const opt = document.createElement('option');
+    opt.value = band.name;
+    opt.textContent = band.name;
+    bandSelect.appendChild(opt);
+  }
 }
 
 function applyBandToInput(band: BandEntry, input: HTMLInputElement, hint: HTMLElement | null): void {
@@ -63,16 +88,16 @@ export function resetSerialPanel(): void {
  *
  * Used by auto-connect on startup and Settings → Test Connection.
  */
-export async function connectFromConfig(port: string, baudRate: number): Promise<void> {
-  const info = await connectSerial(port, baudRate);
-  handleConnectSuccess(info);
+export async function connectFromConfig(port: string, baudRate: number, radioType: string): Promise<void> {
+  const info = await connectSerial(port, baudRate, radioType);
+  handleConnectSuccess(info, radioType);
 }
 
 /**
  * Post-connect logic — updates sidebar, starts polling, syncs TX power.
  * Exported so main.ts can call it on reload when the backend is already connected.
  */
-export function handleConnectSuccess(info: RadioInfo): void {
+export function handleConnectSuccess(info: RadioInfo, radioType: string): void {
   const portNameEl = document.getElementById('radio-port-name');
   const disconnectBtn = document.getElementById('radio-disconnect-btn') as HTMLButtonElement | null;
   const bandSelect = document.getElementById('band-select') as HTMLSelectElement;
@@ -86,7 +111,9 @@ export function handleConnectSuccess(info: RadioInfo): void {
   if (portNameEl) portNameEl.textContent = info.port;
   if (disconnectBtn) disconnectBtn.style.display = '';
 
-  // Detect band from reported frequency and update controls
+  // Offer only the bands this radio can tune, then detect the band from the reported frequency
+  _radioType = radioType;
+  populateBandSelect(bandSelect, radioType);
   const band = detectBand(info.frequencyHz);
   _activeBand = band;
   bandSelect.disabled = false;
@@ -119,7 +146,8 @@ export function handleConnectSuccess(info: RadioInfo): void {
   // Mark connected in app-state
   setSerialState(true, info.port);
 
-  // Sync TX power slider with actual radio power
+  // Apply this radio's minimum power, then sync the slider with the actual radio power
+  setTxPowerMin(MIN_TX_POWER_W[radioType] ?? 0);
   syncTxPowerFromRadio();
 
   // Start polling radio state every 2s to track knob/VFO changes on the rig
@@ -133,6 +161,7 @@ export function handleConnectSuccess(info: RadioInfo): void {
 let _connected = false;
 let _pollInterval: number | null = null;
 let _activeBand: BandEntry | null = null;
+let _radioType = 'FT-991A';
 let _lastUserActionAt = 0;
 const USER_ACTION_SUPPRESS_MS = 4_000;
 
@@ -173,13 +202,8 @@ export function setupSerialPanel(onOpenSettings: (tab: 'radio' | 'general') => v
   const rangeHint = document.getElementById('freq-range-hint') as HTMLElement;
   const freqMode = document.getElementById('frequency-mode') as HTMLElement;
 
-  // Populate band dropdown from BAND_PLAN
-  for (const band of BAND_PLAN) {
-    const opt = document.createElement('option');
-    opt.value = band.name;
-    opt.textContent = band.name;
-    bandSelect.appendChild(opt);
-  }
+  // Populate band dropdown (re-populated per radio model on connect)
+  populateBandSelect(bandSelect, _radioType);
 
   // Configure button → open settings on Radio tab
   configureBtn?.addEventListener('click', () => onOpenSettings('radio'));
@@ -198,7 +222,7 @@ export function setupSerialPanel(onOpenSettings: (tab: 'radio' | 'general') => v
   bandSelect.addEventListener('change', () => {
     if (!_connected) return;
     _lastUserActionAt = Date.now();
-    const band = BAND_PLAN.find(b => b.name === bandSelect.value) ?? null;
+    const band = bandsFor(_radioType).find(b => b.name === bandSelect.value) ?? null;
     if (!band) return;
     _activeBand = band;
     applyBandToInput(band, freqInput, rangeHint);
