@@ -74,6 +74,14 @@ impl RadioType {
         }
     }
 
+    /// Inclusive TX power range in watts accepted by `PC;` on this radio.
+    pub fn tx_power_range(&self) -> (u32, u32) {
+        match self {
+            RadioType::Ft991a => (0, 100),
+            RadioType::Ft891 => (5, 100),
+        }
+    }
+
     fn support(&self, band: &Band) -> Support {
         match self {
             RadioType::Ft991a => band.ft991a,
@@ -146,6 +154,12 @@ mod tests {
     fn default_bauds() {
         assert_eq!(RadioType::Ft991a.default_baud(), 38400);
         assert_eq!(RadioType::Ft891.default_baud(), 9600);
+    }
+
+    #[test]
+    fn tx_power_ranges() {
+        assert_eq!(RadioType::Ft991a.tx_power_range(), (0, 100));
+        assert_eq!(RadioType::Ft891.tx_power_range(), (5, 100));
     }
 
     #[test]

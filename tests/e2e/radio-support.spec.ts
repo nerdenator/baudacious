@@ -166,4 +166,48 @@ test.describe('Radio support (FT-991A / FT-891)', () => {
     const args = await page.evaluate(() => (window as any).__connectArgs);
     expect(args[0]).toMatchObject({ radioType: 'FT-891', baudRate: 9600 });
   });
+
+  test('baud hint is shown only for the FT-891', async ({ page }) => {
+    await mockInvoke(page, BASE_MOCKS);
+    await page.goto('/');
+    const { radioSelect } = await openRadioTab(page);
+    const hint = page.locator('#baud-rate-hint');
+
+    await expect(hint).toBeHidden();
+    await radioSelect.selectOption('FT-891');
+    await expect(hint).toBeVisible();
+    await expect(hint).toContainText('05-06');
+    await radioSelect.selectOption('FT-991A');
+    await expect(hint).toBeHidden();
+  });
+
+  test('FT-891 connected: TX power minimum is 5 W and lower entries are raised to 5', async ({ page }) => {
+    await mockInvoke(page, { ...BASE_MOCKS, get_tx_power: 10, set_tx_power_config: null });
+    await page.goto('/');
+    const tabs = await openRadioTab(page);
+    await tabs.radioSelect.selectOption('FT-891');
+    await testConnection(page, tabs);
+
+    const slider = page.locator('#tx-power-slider');
+    const numInput = page.locator('#tx-power-value');
+    await expect(slider).toHaveAttribute('min', '5');
+
+    await numInput.fill('2');
+    await numInput.press('Enter');
+    await expect(numInput).toHaveValue('5');
+    await expect(slider).toHaveValue('5');
+  });
+
+  test('FT-991A connected: TX power minimum stays 0', async ({ page }) => {
+    await mockInvoke(page, { ...BASE_MOCKS, get_tx_power: 10, set_tx_power_config: null });
+    await page.goto('/');
+    const tabs = await openRadioTab(page);
+    await testConnection(page, tabs);
+
+    await expect(page.locator('#tx-power-slider')).toHaveAttribute('min', '0');
+    const numInput = page.locator('#tx-power-value');
+    await numInput.fill('2');
+    await numInput.press('Enter');
+    await expect(numInput).toHaveValue('2');
+  });
 });

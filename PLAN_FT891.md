@@ -125,6 +125,8 @@ Remaining unknown: exact CAT command timing/inter-command delay (not in the book
 | CAT baud default conflicting in sources | Offer all four rates; UI hint to match radio menu 05-06 |
 | Refactoring `ft991a.rs` band code regresses it | Behaviour-preserving; existing 40+ tests are the safety net |
 | Unknown `radio_type` silently using FT-991A could key the wrong protocol | Explicit parse error |
+| Set commands may or may not get a reply on real hardware | Sent write-only; FT-891 query reads wait for the matching frame and skip strays/echo (`find_reply_frame`). A stray `?;` NAK from a failed Set surfaces as one error on the next query |
+| Power < 5 W would leave the radio at its old power (TX path ignores a failed power set) | Adapter raises to 5 W; slider/number box minimum is 5 W on FT-891; stored lower value raised on connect |
 | I have no FT-891 hardware here | Unit tests via mock serial; on-air verification is the user's |
 
 ## Out of scope

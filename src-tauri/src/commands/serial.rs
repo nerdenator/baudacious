@@ -158,7 +158,7 @@ mod tests {
     fn build_radio_ft891_enforces_ft891_limits() {
         let (conn, log) = stub();
         let mut radio = build_radio(RadioType::Ft891, conn);
-        assert!(radio.set_tx_power(4).is_err(), "FT-891 minimum is 5 W");
+        assert!(radio.set_tx_power(101).is_err(), "FT-891 maximum is 100 W");
         assert!(radio.set_frequency(Frequency::hz(144_200_000.0)).is_err(), "no 2m on FT-891");
         assert!(log.lock().unwrap().is_empty());
     }

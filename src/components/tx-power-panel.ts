@@ -4,10 +4,20 @@ import { getTxPower, setTxPowerConfig } from '../services/backend-api';
 import { onSerialChanged } from '../services/app-state';
 
 let _syncFromRadio: (() => void) | null = null;
+let _setMinWatts: ((min: number) => void) | null = null;
 
 /** Call after successful radio connect to sync slider with actual radio power */
 export function syncTxPowerFromRadio(): void {
   _syncFromRadio?.();
+}
+
+/**
+ * Set the lowest power the connected radio accepts (FT-891: 5 W). Raises the current
+ * value to the minimum, and saves it, so a lower stored setting can't leave the radio at
+ * an unintended power.
+ */
+export function setTxPowerMin(min: number): void {
+  _setMinWatts?.(min);
 }
 
 export function setupTxPowerPanel(): void {
@@ -29,6 +39,7 @@ export function setupTxPowerPanel(): void {
   });
 
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  let minWatts = 0;
 
   function commit(w: number): void {
     if (debounceTimer !== null) clearTimeout(debounceTimer);
@@ -66,7 +77,7 @@ export function setupTxPowerPanel(): void {
   function commitNumInput(): void {
     let w = parseInt(numInput!.value, 10);
     if (isNaN(w)) w = parseInt(slider!.value, 10);
-    w = Math.max(0, Math.min(100, w));
+    w = Math.max(minWatts, Math.min(100, w));
     applyWatts(w);
     commit(w);
   }
@@ -80,7 +91,7 @@ export function setupTxPowerPanel(): void {
   });
 
   downBtn?.addEventListener('click', () => {
-    let w = Math.max(0, parseInt(slider.value, 10) - 1);
+    let w = Math.max(minWatts, parseInt(slider.value, 10) - 1);
     applyWatts(w);
     commit(w);
   });
@@ -90,6 +101,17 @@ export function setupTxPowerPanel(): void {
     applyWatts(w);
     commit(w);
   });
+
+  _setMinWatts = (min: number) => {
+    minWatts = min;
+    slider.min = String(min);
+    numInput.min = String(min);
+    const current = parseInt(slider.value, 10);
+    if (current < min) {
+      applyWatts(min);
+      commit(min);
+    }
+  };
 
   _syncFromRadio = () => {
     getTxPower()

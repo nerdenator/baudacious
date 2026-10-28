@@ -14,9 +14,6 @@ use crate::cat::{CatCommand, CatDialect, CatResponse, CatSession};
 use crate::domain::{Frequency, Psk31Error, Psk31Result, RadioStatus, RadioType};
 use crate::ports::{RadioControl, SerialConnection};
 
-const MIN_TX_POWER_W: u32 = 5;
-const MAX_TX_POWER_W: u32 = 100;
-
 /// Mode names from the shared table that the FT-891 does not have.
 const UNSUPPORTED_MODES: &[&str] = &["DATA-FM", "C4FM"];
 
@@ -107,12 +104,22 @@ impl RadioControl for Ft891Radio {
         }
     }
 
+    /// Values below the radio's 5 W minimum are raised to 5 W rather than rejected:
+    /// callers on the TX path ignore a failed power set, which would leave the radio
+    /// at whatever (possibly much higher) power it had before.
     fn set_tx_power(&mut self, watts: u32) -> Psk31Result<()> {
-        if !(MIN_TX_POWER_W..=MAX_TX_POWER_W).contains(&watts) {
+        let (min, max) = RadioType::Ft891.tx_power_range();
+        if watts > max {
             return Err(Psk31Error::Cat(format!(
-                "TX power {watts} W outside FT-891 range ({MIN_TX_POWER_W}–{MAX_TX_POWER_W} W)"
+                "TX power {watts} W exceeds FT-891 maximum ({max} W)"
             )));
         }
+        let watts = if watts < min {
+            log::warn!("TX power {watts} W below FT-891 minimum; using {min} W");
+            min
+        } else {
+            watts
+        };
         self.session.execute_write_only(&CatCommand::SetTxPower(watts))?;
         Ok(())
     }
@@ -326,10 +333,16 @@ mod tests {
     }
 
     #[test]
-    fn tx_power_out_of_range_rejected_before_sending() {
+    fn tx_power_below_minimum_is_raised_to_5w() {
         let (mut r, log) = make_radio(&[]);
-        assert!(r.set_tx_power(0).is_err());
-        assert!(r.set_tx_power(4).is_err());
+        r.set_tx_power(0).unwrap();
+        r.set_tx_power(4).unwrap();
+        assert_eq!(sent(&log), ["PC005;", "PC005;"]);
+    }
+
+    #[test]
+    fn tx_power_above_maximum_rejected_before_sending() {
+        let (mut r, log) = make_radio(&[]);
         assert!(r.set_tx_power(101).is_err());
         assert!(sent(&log).is_empty());
     }

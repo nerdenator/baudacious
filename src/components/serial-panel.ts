@@ -4,7 +4,7 @@
 
 import { connectSerial, disconnectSerial, setFrequency, setMode, getRadioState } from '../services/backend-api';
 import { setSerialState } from '../services/app-state';
-import { syncTxPowerFromRadio } from './tx-power-panel';
+import { syncTxPowerFromRadio, setTxPowerMin } from './tx-power-panel';
 import type { RadioInfo } from '../types';
 
 type BandEntry = {
@@ -15,6 +15,9 @@ type BandEntry = {
   /** Radio models that can tune this band (mirrors domain/radio_type.rs). */
   readonly radios: readonly string[];
 };
+
+/** Lowest TX power (W) each radio accepts (mirrors RadioType::tx_power_range in Rust). */
+const MIN_TX_POWER_W: Record<string, number> = { 'FT-991A': 0, 'FT-891': 5 };
 
 const ALL_RADIOS = ['FT-991A', 'FT-891'] as const;
 const VHF_UHF_RADIOS = ['FT-991A'] as const;
@@ -143,7 +146,8 @@ export function handleConnectSuccess(info: RadioInfo, radioType: string): void {
   // Mark connected in app-state
   setSerialState(true, info.port);
 
-  // Sync TX power slider with actual radio power
+  // Apply this radio's minimum power, then sync the slider with the actual radio power
+  setTxPowerMin(MIN_TX_POWER_W[radioType] ?? 0);
   syncTxPowerFromRadio();
 
   // Start polling radio state every 2s to track knob/VFO changes on the rig

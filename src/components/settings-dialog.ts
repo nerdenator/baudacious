@@ -17,6 +17,9 @@ const RADIO_DEFAULT_BAUD: Record<string, number> = {
   'FT-891': 9600,
 };
 
+/** Radios whose CAT baud rate is set in the radio's own menu and must be matched here. */
+const RADIO_BAUD_IS_MENU_SETTING = new Set(['FT-891']);
+
 export interface SettingsDialogDeps {
   getCurrentConfig: () => Configuration | null;
   onSave: (config: Configuration) => Promise<void>;
@@ -136,13 +139,24 @@ export function setupSettingsDialog(deps: SettingsDialogDeps): void {
   for (const baud of [4800, 9600, 19200, 38400, 57600, 115200]) {
     baudSelect.appendChild(option(String(baud), String(baud)));
   }
-  radioPanel.appendChild(deviceGroup('Baud Rate', baudSelect));
+  const baudGroup = deviceGroup('Baud Rate', baudSelect);
+  const baudHint = el('div', 'settings-hint');
+  baudHint.id = 'baud-rate-hint';
+  baudHint.textContent = "Must match the radio's menu 05-06 CAT RATE (4800 / 9600 / 19200 / 38400).";
+  baudGroup.appendChild(baudHint);
+  radioPanel.appendChild(baudGroup);
 
-  // Picking a different radio suggests its usual CAT baud rate. The FT-891's rate is a
-  // radio menu setting (05-06), so the user can still change it to match.
+  // The FT-891's CAT rate is a radio menu setting, so show a reminder for it.
+  function updateBaudHint(): void {
+    baudHint.hidden = !RADIO_BAUD_IS_MENU_SETTING.has(radioTypeSelect.value);
+  }
+  updateBaudHint();
+
+  // Picking a different radio suggests its usual CAT baud rate; the user can still change it.
   radioTypeSelect.addEventListener('change', () => {
     const suggested = RADIO_DEFAULT_BAUD[radioTypeSelect.value];
     if (suggested) baudSelect.value = String(suggested);
+    updateBaudHint();
   });
   panelArea.appendChild(radioPanel);
 
@@ -248,6 +262,7 @@ export function setupSettingsDialog(deps: SettingsDialogDeps): void {
     audioOutputSelect.value = config.audio_output ?? '';
     portSelect.value = config.serial_port ?? '';
     radioTypeSelect.value = config.radio_type;
+    updateBaudHint();
     baudSelect.value = String(config.baud_rate);
     deleteBtn.disabled = config.name === 'Default';
   }
