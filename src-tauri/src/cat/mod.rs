@@ -37,7 +37,19 @@ pub const MODE_TABLE: &[(&str, &str)] = &[
     ("E", "C4FM"),
 ];
 
-/// High-level CAT commands understood by the FT-991A.
+/// Which radio's reply formats `decode_for` should expect.
+///
+/// The wire commands are the same ASCII/`;` protocol, but a few replies differ:
+/// the FT-891's `IF;` has no TX flag (CTCSS/shift sit where the FT-991A puts
+/// TX/split) and its `SM0;` reply is 3 digits, 000–255.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CatDialect {
+    #[default]
+    Ft991a,
+    Ft891,
+}
+
+/// High-level CAT commands understood by the supported radios.
 #[derive(Debug, PartialEq, Clone)]
 pub enum CatCommand {
     // VFO-A frequency
@@ -58,6 +70,8 @@ pub enum CatCommand {
     GetSignalStrength,
     // Comprehensive status (IF; command)
     GetStatus,
+    // PTT state query (TX; command)
+    GetTxState,
     /// Select band group (BS; command).  Code 0–10=HF/6m, 12=2m, 13=70cm.
     /// The FT-991A executes BS; silently — no ack is returned.
     BandSelect(u8),
@@ -75,6 +89,8 @@ pub enum CatResponse {
     SignalStrength(f32),
     /// Full radio status from the IF; command
     Status(RadioStatus),
+    /// PTT state from `TX;` — true if the radio is transmitting (CAT or front-panel)
+    TxState(bool),
     /// Command accepted; radio returned just ";"
     Ack,
 }

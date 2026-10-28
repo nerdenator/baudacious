@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 use crate::domain::{Psk31Error, Psk31Result};
 use crate::ports::SerialConnection;
 
-use super::{decode, encode, CatCommand, CatResponse};
+use super::decode::decode_for;
+use super::{encode, CatCommand, CatDialect, CatResponse};
 
 /// Minimum delay between CAT commands (FT-991A firmware requirement)
 const COMMAND_DELAY_MS: u64 = 50;
@@ -30,15 +31,22 @@ const RESPONSE_TIMEOUT_READS: usize = 10;
 pub struct CatSession {
     serial: Box<dyn SerialConnection>,
     last_command_time: Option<Instant>,
+    dialect: CatDialect,
 }
 
 impl CatSession {
     pub fn new(serial: Box<dyn SerialConnection>) -> Self {
+        Self::with_dialect(serial, CatDialect::default())
+    }
+
+    /// Open a session that decodes replies in the given radio's format.
+    pub fn with_dialect(serial: Box<dyn SerialConnection>, dialect: CatDialect) -> Self {
         // Give the USB-serial adapter time to settle before the first command.
         std::thread::sleep(Duration::from_millis(PORT_SETTLE_MS));
         Self {
             serial,
             last_command_time: None,
+            dialect,
         }
     }
 
@@ -68,7 +76,7 @@ impl CatSession {
         // e.g. "FA;FA00014070000;" → "FA00014070000;"
         let raw = raw.strip_prefix(&wire).unwrap_or(&raw);
 
-        decode(raw, cmd)
+        decode_for(self.dialect, raw, cmd)
     }
 
     /// Write a command and do NOT wait for a response.
@@ -185,6 +193,27 @@ mod tests {
             response: response.to_string(),
         };
         (CatSession::new(Box::new(mock)), log)
+    }
+
+    #[test]
+    fn dialect_selects_signal_strength_format() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mock = MockSerial { log, response: "SM0255;".to_string() };
+        let mut s = CatSession::with_dialect(Box::new(mock), CatDialect::Ft891);
+        assert_eq!(
+            s.execute(&CatCommand::GetSignalStrength).unwrap(),
+            CatResponse::SignalStrength(1.0)
+        );
+        // Same reply through the default (FT-991A) dialect is rejected
+        let (mut d, _) = make_session("SM0255;");
+        assert!(d.execute(&CatCommand::GetSignalStrength).is_err());
+    }
+
+    #[test]
+    fn execute_get_tx_state_sends_tx_query() {
+        let (mut s, log) = make_session("TX1;");
+        assert_eq!(s.execute(&CatCommand::GetTxState).unwrap(), CatResponse::TxState(true));
+        assert_eq!(log.lock().unwrap()[0], "TX;");
     }
 
     // --- Basic I/O ---
