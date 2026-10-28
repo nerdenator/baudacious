@@ -1,10 +1,11 @@
 //! Serial port commands — list, connect, disconnect
 
+use crate::adapters::ft891::Ft891Radio;
 use crate::adapters::ft991a::Ft991aRadio;
 use crate::adapters::mock_radio::MockRadio;
 use crate::adapters::serial_port::SerialPortFactory;
-use crate::domain::{data_mode_for_frequency, RadioInfo, SerialPortInfo};
-use crate::ports::{RadioControl, SerialFactory};
+use crate::domain::{data_mode_for_frequency, RadioInfo, RadioType, SerialPortInfo};
+use crate::ports::{RadioControl, SerialConnection, SerialFactory};
 use crate::state::AppState;
 use tauri::State;
 
@@ -92,21 +93,31 @@ fn disconnect_serial_inner(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
+/// Pick the radio adapter for `radio_type` and wrap the open serial connection in it.
+fn build_radio(radio_type: RadioType, connection: Box<dyn SerialConnection>) -> Box<dyn RadioControl> {
+    match radio_type {
+        RadioType::Ft991a => Box::new(Ft991aRadio::new(connection)),
+        RadioType::Ft891 => Box::new(Ft891Radio::new(connection)),
+    }
+}
+
 #[tauri::command]
 pub fn connect_serial(
     state: State<AppState>,
     port: String,
     baud_rate: u32,
+    radio_type: String,
 ) -> Result<RadioInfo, String> {
+    // Reject unknown radios up front — never fall back to another radio's protocol.
+    let radio_type: RadioType = radio_type.parse().map_err(|e: crate::domain::Psk31Error| e.to_string())?;
     let mock_mode = std::env::var("MOCK_RADIO").is_ok();
 
     let (radio, display_port): (Box<dyn RadioControl>, String) = if mock_mode {
         log::info!("[MOCK RADIO] MOCK_RADIO=1: skipping serial, using mock adapter");
         (Box::new(MockRadio::new()), "mock".to_string())
     } else {
-        // Open real serial connection and wrap in FT-991A adapter
         let connection = SerialPortFactory::open(&port, baud_rate).map_err(|e| e.to_string())?;
-        (Box::new(Ft991aRadio::new(connection)), port.clone())
+        (build_radio(radio_type, connection), port.clone())
     };
 
     connect_serial_inner(&state, display_port, baud_rate, radio)
@@ -121,6 +132,44 @@ pub fn disconnect_serial(state: State<AppState>) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::adapters::mock_radio::MockRadio;
+    use crate::domain::{Frequency, Psk31Result};
+
+    /// Serial stub that records writes and answers every read with ";".
+    struct StubSerial(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+    impl SerialConnection for StubSerial {
+        fn write(&mut self, data: &[u8]) -> Psk31Result<usize> {
+            self.0.lock().unwrap().push(String::from_utf8_lossy(data).into());
+            Ok(data.len())
+        }
+        fn read(&mut self, buf: &mut [u8]) -> Psk31Result<usize> {
+            buf[0] = b';';
+            Ok(1)
+        }
+        fn close(&mut self) -> Psk31Result<()> { Ok(()) }
+        fn is_connected(&self) -> bool { true }
+    }
+
+    fn stub() -> (Box<dyn SerialConnection>, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        (Box::new(StubSerial(log.clone())), log)
+    }
+
+    #[test]
+    fn build_radio_ft891_enforces_ft891_limits() {
+        let (conn, log) = stub();
+        let mut radio = build_radio(RadioType::Ft891, conn);
+        assert!(radio.set_tx_power(4).is_err(), "FT-891 minimum is 5 W");
+        assert!(radio.set_frequency(Frequency::hz(144_200_000.0)).is_err(), "no 2m on FT-891");
+        assert!(log.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn build_radio_ft991a_enforces_ft991a_limits() {
+        let (conn, log) = stub();
+        let mut radio = build_radio(RadioType::Ft991a, conn);
+        assert!(radio.set_frequency(Frequency::hz(144_200_000.0)).is_ok(), "2m is fine on FT-991A");
+        assert_eq!(log.lock().unwrap()[0], "BS12;");
+    }
 
     #[test]
     fn connect_corrects_wrong_mode_on_connect() {
