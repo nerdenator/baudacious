@@ -134,6 +134,25 @@ If you have a second receiver or SDR available:
 
 ---
 
+## 7. FT-891 (run this section only with an FT-891; use a dummy load first)
+
+Not yet run on hardware. Behaviours below are from the Yaesu CAT manual and unit tests only.
+
+- [ ] Radio menu `05-06 CAT RATE` noted; Settings → Radio baud set to match (4800/9600/19200/38400)
+- [ ] Radio menu `05-08 CAT RTS` / `05-07 CAT TOT` noted (try CAT RTS disabled if connect times out)
+- [ ] Settings → Radio Type = FT-891, Test Connection succeeds; freq and mode shown correctly
+- [ ] Band dropdown lists 160m–6m only (no 2m / 70cm)
+- [ ] Select each of 20m, 40m, 6m: radio changes band and frequency; mode becomes DATA-USB / DATA-LSB as expected
+- [ ] Tune the radio by hand to 60m (5.3585 MHz): app follows; set a frequency on 60m from the input box works
+- [ ] PTT: Tune/TX keys the radio and releases it (**watch for a ~1 s stall — set commands are sent without waiting for a reply; if PTT never keys, the FT-891 may need a reply-wait**)
+- [ ] Press the mic/front-panel PTT: status poll does **not** break; app shows TX state sensibly
+- [ ] With CTCSS enabled on the radio: app does **not** show "transmitting" while receiving
+- [ ] TX power slider at 5 W and 100 W changes the radio's power; **slider below 5 W is rejected by the adapter (radio keeps its previous power)**
+- [ ] S-meter / signal indicator moves with a signal
+- [ ] Disconnect USB while connected: app shows disconnect toast (as in 5a)
+
+---
+
 ## Notes
 
 Record any unexpected behavior here during the session.

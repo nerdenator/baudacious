@@ -1,5 +1,9 @@
 # PLAN_RADIO_SUPPORT.md — Multi-Radio Support: FT-891 and FT-817/818/818ND
 
+> **FT-891 (Session A) is superseded by `PLAN_FT891.md`**, which corrects this plan's CAT assumptions
+> (the FT-891 *does* support `IF;`, but it has no TX flag; `SM0;` is 3-digit; no 60m band-select code;
+> TX power is 5–100 W). The FT-817/818 sections (Sessions B+C) below are still the plan of record.
+
 ## Overview
 
 This plan adds support for the Yaesu FT-891 and the FT-817/818/818ND family to Baudacious. The FT-891 uses a near-identical ASCII CAT protocol to the FT-991A and requires a thin new adapter. The FT-817/818/818ND uses an entirely different binary (5-byte) CAT protocol that needs a dedicated encode/decode layer.
