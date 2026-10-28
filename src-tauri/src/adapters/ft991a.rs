@@ -11,53 +11,18 @@
 use std::time::Duration;
 
 use crate::cat::{CatCommand, CatResponse, CatSession};
-use crate::domain::{Frequency, Psk31Error, Psk31Result, RadioStatus};
+use crate::domain::{Frequency, Psk31Error, Psk31Result, RadioStatus, RadioType};
 use crate::ports::{RadioControl, SerialConnection};
 
-/// US amateur radio bands (FCC Part 97) as (low_hz, high_hz) pairs.
-/// Only frequencies within these bands are accepted.
-const AMATEUR_BANDS_HZ: &[(u64, u64)] = &[
-    (1_800_000, 2_000_000),       // 160m
-    (3_500_000, 4_000_000),       // 80m
-    (5_332_000, 5_405_000),       // 60m
-    (7_000_000, 7_300_000),       // 40m
-    (10_100_000, 10_150_000),     // 30m
-    (14_000_000, 14_350_000),     // 20m
-    (18_068_000, 18_168_000),     // 17m
-    (21_000_000, 21_450_000),     // 15m
-    (24_890_000, 24_990_000),     // 12m
-    (28_000_000, 29_700_000),     // 10m
-    (50_000_000, 54_000_000),     // 6m
-    (144_000_000, 148_000_000),   // 2m
-    (420_000_000, 450_000_000),   // 70cm
-];
-
-/// Check if a frequency falls within a US amateur band.
+/// Check if a frequency falls within a US amateur band the FT-991A can tune.
 fn is_amateur_frequency(hz: u64) -> bool {
-    AMATEUR_BANDS_HZ.iter().any(|&(lo, hi)| hz >= lo && hz <= hi)
+    RadioType::Ft991a.supports_frequency(hz)
 }
 
-/// Map a frequency to the FT-991A BS; band-select code.
-///
-/// Codes: 0=160m, 1=80m, 2=60m, 3=40m, 4=30m, 5=20m, 6=17m, 7=15m, 8=12m,
-///        9=10m, 10=6m, 12=2m, 13=70cm.
+/// Map a frequency to the FT-991A BS; band-select code (shared table in
+/// `domain::radio_type`). Out-of-band frequencies fall back to 20m (5).
 fn band_select_code(hz: u64) -> u8 {
-    match hz {
-        1_800_000..=2_000_000 => 0,
-        3_500_000..=4_000_000 => 1,
-        5_332_000..=5_405_000 => 2,
-        7_000_000..=7_300_000 => 3,
-        10_100_000..=10_150_000 => 4,
-        14_000_000..=14_350_000 => 5,
-        18_068_000..=18_168_000 => 6,
-        21_000_000..=21_450_000 => 7,
-        24_890_000..=24_990_000 => 8,
-        28_000_000..=29_700_000 => 9,
-        50_000_000..=54_000_000 => 10,
-        144_000_000..=148_000_000 => 12,
-        420_000_000..=450_000_000 => 13,
-        _ => 5,
-    }
+    RadioType::Ft991a.band_select_code(hz).unwrap_or(5)
 }
 
 /// FT-991A radio adapter. Owns a CatSession and tracks TX state.

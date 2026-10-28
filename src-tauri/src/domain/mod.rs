@@ -6,9 +6,11 @@
 pub mod config;
 pub mod error;
 pub mod frequency;
+pub mod radio_type;
 pub mod types;
 
 pub use config::*;
 pub use error::*;
 pub use frequency::*;
+pub use radio_type::*;
 pub use types::*;
